@@ -1,10 +1,8 @@
-"""The broom icon by the clock, its menu, and the Settings window (placeholder in stage 1)."""
+"""The broom icon by the clock and its menu. (The Settings window lives in settings.py.)"""
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMenu, QPushButton,
-                               QSystemTrayIcon, QVBoxLayout, QWidgetAction)
+from PySide6.QtWidgets import QMenu, QPushButton, QSystemTrayIcon, QWidgetAction
 
-from . import paths
 from .theme import rgb_gradient
 
 RED_CSS = ("QPushButton{background:#e5293b;color:white;font-weight:bold;border:none;"
@@ -36,31 +34,6 @@ def broom_icon():
     return QIcon(pm)
 
 
-class SettingsDialog(QDialog):
-    def __init__(self, controller):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
-        self.c = controller
-        self.setWindowTitle("Clutter Buster - Settings")
-        self.setWindowIcon(broom_icon())
-        lay = QVBoxLayout(self)
-        title = QLabel("<h2>Clutter Buster</h2>")
-        lay.addWidget(title)
-        lay.addWidget(QLabel(
-            "Stage 2.<br>"
-            "Neon Gamer &amp; custom themes, Edit mode sliders and start-with-Windows arrive in stage 3.<br><br>"
-            f"Your groups are saved in:<br><code>{paths.app_dir()}</code>"))
-        row = QHBoxLayout()
-        remove = QPushButton("Remove Clutter Buster")
-        remove.setStyleSheet(RED_CSS)
-        remove.clicked.connect(lambda: (self.close(), self.c.request_remove()))
-        row.addWidget(remove)
-        row.addStretch(1)
-        ok = QPushButton("Close")
-        ok.clicked.connect(self.close)
-        row.addWidget(ok)
-        lay.addLayout(row)
-
-
 class Tray(QSystemTrayIcon):
     def __init__(self, controller):
         super().__init__(broom_icon())
@@ -68,7 +41,7 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("Clutter Buster")
         m = QMenu()
         m.addAction("Settings...", self.c.show_settings)
-        m.addAction("Edit layout...", self.c.edit_layout)
+        m.addAction("Edit layout", self.c.edit_layout)
         self.undo_action = m.addAction("Undo", self.c.undo)
         m.addSeparator()
         m.addAction("Quit (shows everything on the desktop again)", self.c.quit)

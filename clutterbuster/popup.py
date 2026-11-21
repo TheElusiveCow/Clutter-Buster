@@ -8,23 +8,25 @@ Drag an item onto another item to make a new group with both.
 """
 import math
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QTextOption
+from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QTextOption
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import icons, sounds
-from .glass import accept_drag, draw_glass, draw_shadow, parse_drop, read_item, rounded, start_item_drag
-from .theme import THEME, accent_color, qcolor
+from .glass import (accept_drag, bring_to_top, draw_edit_outline, draw_glass, draw_neon, draw_shadow,
+                    parse_drop, read_item, rounded, start_item_drag)
+from .theme import THEME, accent_color, qcolor, rad
 
-PER_PAGE = 9
 MARGIN = 22        # room around the panel for its soft shadow
 PAD = 20
 HEADER_H = 58
 DOTS_H = 26
+EDGE = 9           # Edit layout: grab this close to the panel edge to resize it
+MIN_ICON = 32
 
 
-def cell_size():
-    isz = THEME["popup_icon"]
+def cell_size(isz=None):
+    isz = THEME["popup_icon"] if isz is None else isz
     return isz + 54, isz + 50     # ~118 x 114 with 64px icons
 
 
@@ -53,6 +55,7 @@ class GroupPopup(QWidget):
         self._drop_item = None
         self.last_closed = (None, 0)
         self.stay_open = False   # showcase screenshots only
+        self._resize = None      # Edit layout: (press pos, panel rect, edges)
         self.anim = QVariantAnimation(self)
         self.anim.valueChanged.connect(self._on_progress)
         self.anim.finished.connect(self._on_anim_done)
@@ -69,9 +72,35 @@ class GroupPopup(QWidget):
         return self.c.layout.group(self.gid) if self.gid else None
 
     # ------------------------------------------------------------ size & place
+    def metrics(self):
+        """(panel w, panel h, cols, rows, cell w, cell h, icon size).
+        Columns follow the "Icons per row" slider and icons the "Icon size" slider.
+        After you resize the popup in Edit layout its size is kept and icons/rows fit into it."""
+        cols = max(1, int(THEME.get("per_row", 3)))
+        isz = int(THEME["popup_icon"])
+        size = self.c.ui.get("popup_size") if hasattr(self.c, "ui") else None
+        if size:
+            w, h = size
+            cw = (w - 2 * PAD) / cols
+            isz = int(max(MIN_ICON, min(isz, cw - 54)))
+            ch = isz + 50
+            rows = max(1, int((h - HEADER_H - DOTS_H - PAD) // ch))
+            return w, h, cols, rows, cw, ch, isz
+        cw, ch = cell_size(isz)
+        return cols * cw + 2 * PAD, HEADER_H + 3 * ch + DOTS_H + PAD, cols, 3, cw, ch, isz
+
+    def min_panel_size(self):
+        cols = max(1, int(THEME.get("per_row", 3)))
+        cw, ch = cell_size(MIN_ICON)
+        return cols * cw + 2 * PAD, HEADER_H + ch + DOTS_H + PAD
+
+    def per_page(self):
+        m = self.metrics()
+        return m[2] * m[3]
+
     def panel_size(self):
-        cw, ch = cell_size()
-        return 3 * cw + 2 * PAD, HEADER_H + 3 * ch + DOTS_H + PAD
+        m = self.metrics()
+        return int(m[0]), int(m[1])
 
     def panel_rect(self):
         w, h = self.panel_size()
@@ -112,6 +141,7 @@ class GroupPopup(QWidget):
         self.raise_()
         self.activateWindow()
         self.setFocus()
+        bring_to_top(self)
         sounds.play("open")
         self._animate(1.0, 170, QEasingCurve.OutCubic)
 
@@ -159,12 +189,12 @@ class GroupPopup(QWidget):
     # ------------------------------------------------------------ geometry
     def pages(self):
         g = self.group
-        return max(1, math.ceil((len(g["items"]) if g else 0) / PER_PAGE))
+        return max(1, math.ceil((len(g["items"]) if g else 0) / self.per_page()))
 
     def item_rect(self, k, shift=0.0):
         pr = self.panel_rect()
-        cw, ch = cell_size()
-        row, col = divmod(k, 3)
+        _w, _h, cols, _rows, cw, ch, _isz = self.metrics()
+        row, col = divmod(k, cols)
         return QRectF(pr.left() + PAD + col * cw + shift, pr.top() + HEADER_H + row * ch, cw, ch)
 
     def dot_rects(self):
@@ -190,10 +220,11 @@ class GroupPopup(QWidget):
         p.scale(s, s)
         p.translate(-self.origin)
         p.setOpacity(t)
-        rad = 28
-        draw_shadow(p, pr, rad, 1.3, layers=10)
-        draw_glass(p, pr, rad, fill_key="popup_fill", glow=self._drop_hover)
+        rr = rad(28)
         acc = accent_color(g)
+        draw_shadow(p, pr, rr, 1.3, layers=10)
+        draw_glass(p, pr, rr, fill_key="popup_fill", glow=self._drop_hover)
+        draw_neon(p, pr, rr, accent=acc)
         # header: accent dot + big title + item count
         f = QFont(self.font())
         f.setPointSizeF(17)
@@ -215,26 +246,27 @@ class GroupPopup(QWidget):
                    f"{n} item{'s' if n != 1 else ''}")
         # items as soft white cards (clipped so sliding pages look right)
         p.save()
-        p.setClipPath(rounded(pr, rad))
+        p.setClipPath(rounded(pr, rr))
         nf = QFont(self.font())
         nf.setPointSizeF(9.5)
         p.setFont(nf)
         nfm = QFontMetrics(nf)
-        isz = THEME["popup_icon"]
+        isz = self.metrics()[6]
+        per = self.per_page()
         opt = QTextOption(Qt.AlignHCenter | Qt.AlignTop)
         opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         for page in range(self.pages()):
             shift = (page - self.page_pos) * (pr.width())
             if abs(shift) >= pr.width():
                 continue
-            for k, it in enumerate(g["items"][page * PER_PAGE:(page + 1) * PER_PAGE]):
-                idx = page * PER_PAGE + k
+            for k, it in enumerate(g["items"][page * per:(page + 1) * per]):
+                idx = page * per + k
                 cell = self.item_rect(k, shift)
                 card = cell.adjusted(5, 4, -5, -4)
                 hot = (idx == self._hover_item and t >= 1) or idx == self._drop_item
                 p.setPen(QPen(acc if idx == self._drop_item else qcolor("card_border"), 1.6 if hot else 1))
-                p.setBrush(qcolor("card_fill") if not hot else QColor(255, 255, 255, 250))
-                p.drawRoundedRect(card, 16, 16)
+                p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
+                p.drawRoundedRect(card, rad(16), rad(16))
                 ir = QRectF(card.center().x() - isz / 2, card.top() + 10, isz, isz)
                 icons.icon_for(it["path"]).paint(p, ir.toRect())
                 name = icons.item_name(it)
@@ -256,6 +288,8 @@ class GroupPopup(QWidget):
             for i, dr in enumerate(self.dot_rects()):
                 p.setBrush(qcolor("dot_on" if i == self.page else "dot_off"))
                 p.drawEllipse(dr.center(), 4, 4)
+        if self.c.edit_mode and t >= 1:
+            draw_edit_outline(p, pr, rr, acc)
         p.end()
 
     # ------------------------------------------------------------ hit testing
@@ -263,8 +297,9 @@ class GroupPopup(QWidget):
         g = self.group
         if g is None or self.progress < 1:
             return None
-        for k in range(PER_PAGE):
-            idx = self.page * PER_PAGE + k
+        per = self.per_page()
+        for k in range(per):
+            idx = self.page * per + k
             if idx >= len(g["items"]):
                 break
             if self.item_rect(k).adjusted(5, 4, -5, -4).contains(QPointF(pos)):
@@ -272,9 +307,54 @@ class GroupPopup(QWidget):
         return None
 
     # ------------------------------------------------------------ mouse / keys
+    def edges_at(self, pos):
+        """Edit layout only: which panel edges are under the mouse (1=L, 2=R, 4=T, 8=B)."""
+        if not self.c.edit_mode:
+            return 0
+        pr = self.panel_rect()
+        if not pr.adjusted(-EDGE, -EDGE, EDGE, EDGE).contains(pos):
+            return 0
+        e = 0
+        if abs(pos.x() - pr.left()) < EDGE:
+            e |= 1
+        if abs(pos.x() - pr.right()) < EDGE:
+            e |= 2
+        if abs(pos.y() - pr.top()) < EDGE:
+            e |= 4
+        if abs(pos.y() - pr.bottom()) < EDGE:
+            e |= 8
+        return e
+
+    def _do_resize(self, gpos):
+        d = gpos - self._resize[0]
+        g0 = QRect(self._resize[1])          # global panel rect at press time
+        mw, mh = self.min_panel_size()
+        e = self._resize[2]
+        if e & 1:
+            g0.setLeft(min(g0.left() + d.x(), g0.right() - mw))
+        if e & 2:
+            g0.setRight(max(g0.right() + d.x(), g0.left() + mw))
+        if e & 4:
+            g0.setTop(min(g0.top() + d.y(), g0.bottom() - mh))
+        if e & 8:
+            g0.setBottom(max(g0.bottom() + d.y(), g0.top() + mh))
+        av = QGuiApplication.primaryScreen().availableGeometry()
+        g0 = g0.intersected(av.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN))
+        self.c.ui["popup_size"] = [g0.width(), g0.height()]
+        self.setGeometry(g0.left() - MARGIN, g0.top() - MARGIN, g0.width() + 2 * MARGIN, g0.height() + 2 * MARGIN)
+        self.page = min(self.page, self.pages() - 1)
+        self.page_pos = float(self.page)
+        self.update()
+
     def mousePressEvent(self, e):
         pos = e.position()
         if self.closing:
+            return
+        edges = self.edges_at(pos)
+        if edges and e.button() == Qt.LeftButton:
+            pr = self.panel_rect()
+            self._resize = (e.globalPosition().toPoint(),
+                            QRect(self.mapToGlobal(pr.topLeft().toPoint()), pr.size().toSize()), edges)
             return
         if not self.panel_rect().contains(pos):
             self.close_animated()  # the shadow margin counts as "outside"
@@ -291,6 +371,15 @@ class GroupPopup(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if self._resize is not None and (e.buttons() & Qt.LeftButton):
+            self._do_resize(e.globalPosition().toPoint())
+            return
+        cur = {5: Qt.SizeFDiagCursor, 10: Qt.SizeFDiagCursor, 6: Qt.SizeBDiagCursor, 9: Qt.SizeBDiagCursor}
+        edges = self.edges_at(pos)
+        if edges:
+            self.setCursor(cur.get(edges, Qt.SizeHorCursor if edges & 3 else Qt.SizeVerCursor))
+        else:
+            self.unsetCursor()
         if self._press is not None and (e.buttons() & Qt.LeftButton):
             d = e.globalPosition().toPoint() - self._press
             if not self._dragging and d.manhattanLength() >= 6:
@@ -313,12 +402,17 @@ class GroupPopup(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._resize is not None:
+            self._resize = None
+            self.c.ui_changed("popup_size")
+            return
         if e.button() != Qt.LeftButton or self._press is None:
             return
         was_drag, pressed = self._dragging, self._press_item
         self._press = None
         self._dragging = False
-        if not was_drag and pressed is not None and pressed == self.item_at(e.position()):
+        if (not was_drag and pressed is not None and pressed == self.item_at(e.position())
+                and not self.c.edit_mode):
             g = self.group
             if g and pressed < len(g["items"]):
                 path = g["items"][pressed]["path"]
@@ -367,7 +461,7 @@ class GroupPopup(QWidget):
             QTimer.singleShot(80, self._maybe_close)
 
     def _maybe_close(self):
-        if not self.isVisible() or self.isActiveWindow() or self.stay_open:
+        if not self.isVisible() or self.isActiveWindow() or self.stay_open or self.c.edit_mode:
             return
         if QApplication.activePopupWidget() or QApplication.activeModalWidget():
             return

@@ -11,17 +11,17 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import __version__, desktop_files as df, icons, paths, sounds
+from . import __version__, desktop_files as df, desktop_layer, icons, paths, sounds, theme
 from .dock import Dock
 from .glass import ask
 from .group_widget import GroupWidget, first_free_left, group_size, min_size, snap_rect
 from .ledger import Hider, Ledger
 from .popup import GroupPopup
 from .quicksearch import QuickSearch
-from .searchbar import SearchBar
+from .searchbar import ActionBar, SearchBar
 from .store import Layout, UndoStack, new_group
-from .theme import ACCENTS
-from .tray import SettingsDialog, Tray, broom_icon
+from .theme import ACCENTS, DEFAULT_UI
+from .tray import Tray, broom_icon
 
 log = logging.getLogger("cb")
 
@@ -54,17 +54,29 @@ class Controller:
         self.undo_stack = UndoStack()
         self.widgets = {}
         self._told_about_show_hidden = False
+        self.edit_mode = False
+        self._edit_snap = None
+        self._appearance_ckpt = False
+        self._covered = False
+        self._last_light = theme.windows_prefers_light()
+        self.settings_win = None
+        self.toolbar = None
+        self.theme_name = ""
+        prefs = self.layout.prefs
+        sounds.SETTINGS.update(on=bool(prefs["sounds"]), volume=int(prefs["volume"]))
         sounds.ensure()
+        self.apply_theme(repaint=False)
 
         # 1) Make the desktop match the saved groups (un-hide leftovers, hide grouped items)
         self.sync_hidden()
 
         # 2) Windows
         self.search = SearchBar(self)
-        self.search.place(self.avail())
-        self.search.show()
+        self.actions = ActionBar(self)
         self.dock = Dock(self)
-        self.place_dock()
+        self.place_bars()
+        self.search.show()
+        self.actions.show()
         self.dock.show()
         self.popup = GroupPopup(self)
         self.quick = QuickSearch(self)
@@ -89,6 +101,27 @@ class Controller:
         self.layer_timer.timeout.connect(self.reassert_layer)
         self.layer_timer.start(2500)
 
+        # Stage 3: neon glow animation (max 25 fps, paused while a game / full-screen or
+        # maximized window covers the desktop), Auto theme watcher, and delayed saving.
+        self.glow_timer = QTimer()
+        self.glow_timer.timeout.connect(self._glow_tick)
+        self._glow_last = time.monotonic()
+        self.cover_timer = QTimer()
+        self.cover_timer.timeout.connect(self._check_covered)
+        self.cover_timer.start(1000)
+        self.theme_timer = QTimer()
+        self.theme_timer.timeout.connect(self._check_windows_theme)
+        self.theme_timer.start(2000)
+        self.save_timer = QTimer()
+        self.save_timer.setSingleShot(True)
+        self.save_timer.timeout.connect(self.layout.save)
+        self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self.search)
+        self.esc_shortcut.setContext(Qt.ApplicationShortcut)
+        self.esc_shortcut.setEnabled(False)
+        self.esc_shortcut.activated.connect(self._on_escape)
+        self.apply_dock_mode()
+        self.update_glow_timer()
+
         app.aboutToQuit.connect(self.on_about_to_quit)
         app.commitDataRequest.connect(lambda *_: self.restore_desktop())
         self.write_status()
@@ -104,10 +137,246 @@ class Controller:
     def avail(self):
         return QGuiApplication.primaryScreen().availableGeometry()
 
+    @property
+    def ui(self):
+        return self.layout.ui
+
     def place_dock(self):
+        pos = self.ui.get("dock_pos")
+        if pos:
+            av = self.avail()
+            cx = min(max(int(pos[0]), av.left() + 120), av.right() - 120)
+            top = min(max(int(pos[1]), av.top()), av.bottom() - 100)
+            self.dock.place(cx, top)
+            return
         sr = self.search.search_rect()
         cx = self.search.x() + sr.center().x()
         self.dock.place(cx, self.search.y() + self.search.height() - 4)
+
+    def _clamp_pos(self, w, pos):
+        av = self.avail()
+        x = min(max(int(pos[0]), av.left()), av.right() - w.width() + 1)
+        y = min(max(int(pos[1]), av.top()), av.bottom() - w.height() + 1)
+        return x, y
+
+    def place_bars(self):
+        """Search bar, New Group/Undo buttons and dock: saved spots, or the defaults."""
+        av = self.avail()
+        pos = self.ui.get("search_pos") or self.search.default_pos(av)
+        self.search.move(*self._clamp_pos(self.search, pos))
+        pos = self.ui.get("actions_pos") or (self.search.x() + self.search.width() - 10, self.search.y())
+        self.actions.move(*self._clamp_pos(self.actions, pos))
+        self.place_dock()
+
+    def bar_moved(self, key, widget, pt):
+        """Edit layout: the search bar, the buttons or the dock was dragged somewhere."""
+        if key == "dock_pos":
+            x, y = self._clamp_pos(widget, (pt.x(), pt.y()))
+            self.ui[key] = [x + widget.width() // 2, y]
+        else:
+            self.ui[key] = list(self._clamp_pos(widget, (pt.x(), pt.y())))
+        self.place_bars()
+        self.schedule_save()
+
+    def schedule_save(self):
+        self.save_timer.start(600)
+
+    # ------------------------------------------------------------------ look & themes
+    def all_windows(self):
+        out = [self.search, self.actions, self.dock, self.popup, self.quick, *self.widgets.values()]
+        out += [w for w in (self.toolbar, self.settings_win) if w is not None]
+        return [w for w in out if w is not None]
+
+    def apply_theme(self, repaint=True):
+        prefs = self.layout.prefs
+        self.theme_name = theme.resolve(prefs.get("theme", theme.AUTO), self.layout.custom_themes)
+        theme.apply(self.theme_name, self.ui, self.layout.custom_themes)
+        if not repaint:
+            return
+        for w in self.all_windows():
+            if hasattr(w, "restyle"):
+                w.restyle()
+            w.update()
+        if self.popup.isVisible():
+            self.popup.page = min(self.popup.page, self.popup.pages() - 1)
+            self.popup.page_pos = float(self.popup.page)
+            if self.ui.get("popup_size") is None:
+                g = self.popup.geometry()
+                pw, ph = self.popup.panel_size()
+                self.popup.resize(pw + 44, ph + 44)
+                self.popup.move(g.topLeft())
+        if self.settings_win is not None:
+            self.settings_win.refresh_from_ui()
+        self.update_glow_timer()
+
+    def set_ui(self, key, value):
+        """A look slider moved (Edit layout toolbar or Settings) - applies live."""
+        self._appearance_checkpoint()
+        self.ui[key] = int(value)
+        self.apply_theme()
+        if self.toolbar is not None and self.toolbar.isVisible():
+            self.toolbar.refresh_from_ui()
+        self.schedule_save()
+
+    def ui_changed(self, key):
+        """Something in the look changed directly (e.g. the popup was resized)."""
+        self._appearance_checkpoint()
+        self.schedule_save()
+
+    def reset_look(self):
+        self._appearance_checkpoint()
+        for k, v in DEFAULT_UI.items():
+            self.ui[k] = v
+        self.ui["popup_size"] = None
+        self.apply_theme()
+        if self.toolbar is not None:
+            self.toolbar.refresh_from_ui()
+        self.schedule_save()
+
+    def _appearance_checkpoint(self):
+        # Edit layout already saved one undo step for the whole session
+        if self.edit_mode or self._appearance_ckpt:
+            return
+        self.undo_stack.push("appearance change", self.layout.snapshot())
+        self._appearance_ckpt = True
+        self.update_undo_ui()
+
+    def settings_closed(self):
+        self._appearance_ckpt = False
+        self.settings_win = None
+
+    def set_theme_choice(self, name):
+        self.layout.prefs["theme"] = name or theme.AUTO
+        self.layout.save()
+        self.apply_theme()
+        log.info("Theme: %s (showing %s)", self.layout.prefs["theme"], self.theme_name)
+
+    def save_custom_theme(self, ct):
+        themes = self.layout.custom_themes
+        old = next((i for i, t in enumerate(themes) if t.get("name") == ct["name"]), None)
+        if old is not None:
+            if not ask("Replace theme?", f"You already have a theme called \"{ct['name']}\". Replace it?",
+                       yes_text="Replace"):
+                return False
+            themes[old] = ct
+        else:
+            themes.append(ct)
+        self.set_theme_choice(ct["name"])
+        return True
+
+    def delete_custom_theme(self, name, confirm=True):
+        themes = self.layout.custom_themes
+        if not any(t.get("name") == name for t in themes):
+            return False
+        if confirm and not ask("Delete theme?", f"Delete your theme \"{name}\"?\n\nThis can't be undone.",
+                               yes_text="Delete theme", danger=True):
+            return False
+        self.layout.extra["custom_themes"] = [t for t in themes if t.get("name") != name]
+        if self.layout.prefs.get("theme") == name:
+            self.layout.prefs["theme"] = theme.AUTO
+        self.layout.save()
+        self.apply_theme()
+        return True
+
+    def set_pref(self, key, value):
+        self.layout.prefs[key] = value
+        if key == "dock_autohide":
+            self.apply_dock_mode()
+        elif key in ("sounds", "volume"):
+            sounds.SETTINGS.update(on=bool(self.layout.prefs["sounds"]), volume=int(self.layout.prefs["volume"]))
+            if key == "volume":
+                sounds.ensure()
+        self.schedule_save()
+
+    def apply_dock_mode(self):
+        pinned = self.edit_mode or not self.layout.prefs.get("dock_autohide", True) or self.showcase
+        self.dock.pinned = pinned
+        if pinned:
+            self.dock.show_dock()
+        else:
+            self.dock.hide_dock()
+
+    # neon glow animation
+    def update_glow_timer(self):
+        want = bool(theme.THEME.get("glow")) and theme.THEME.get("glow_strength", 0) > 0.01 and not self._covered
+        if want and not self.glow_timer.isActive():
+            self._glow_last = time.monotonic()
+            self.glow_timer.start(40)      # 25 frames a second at most
+        elif not want and self.glow_timer.isActive():
+            self.glow_timer.stop()
+
+    def _glow_tick(self):
+        now = time.monotonic()
+        dt = min(0.2, now - self._glow_last)
+        self._glow_last = now
+        theme.PHASE[0] = (theme.PHASE[0] + dt / 6.0) % 1.0   # one lap every 6 seconds
+        from .glasswin import GlassPanel
+        for w in self.all_windows():
+            if w.isVisible() and not isinstance(w, GlassPanel):   # dialogs keep a still glow (saves CPU)
+                w.glow_update() if hasattr(w, "glow_update") else w.update()
+
+    def _check_covered(self):
+        cov = bool(desktop_layer.desktop_covered()) and not self.showcase
+        if cov != self._covered:
+            self._covered = cov
+            self.update_glow_timer()
+
+    def _check_windows_theme(self):
+        light = theme.windows_prefers_light()
+        if light != self._last_light:
+            self._last_light = light
+            if self.layout.prefs.get("theme", theme.AUTO) == theme.AUTO:
+                log.info("Windows switched to %s mode - following it", "light" if light else "dark")
+                self.apply_theme()
+
+    # ------------------------------------------------------------------ edit layout
+    def enter_edit_mode(self):
+        if self.edit_mode:
+            if self.toolbar is not None:
+                self.toolbar.show_on_top()
+            return
+        from .edit_toolbar import EditToolbar
+        self._edit_snap = self.layout.snapshot()
+        self.undo_stack.push("edit layout", self.layout.snapshot())   # one undo step per session
+        self.edit_mode = True
+        self.esc_shortcut.setEnabled(True)
+        self.apply_dock_mode()
+        if self.toolbar is None:
+            self.toolbar = EditToolbar(self)
+        self.toolbar.restyle()
+        self.toolbar.refresh_from_ui()
+        self.toolbar.place(self.avail())
+        self.toolbar.show_on_top()
+        for w in self.all_windows():
+            w.update()
+        self.update_undo_ui()
+        log.info("Edit layout: on")
+
+    def exit_edit_mode(self):
+        if not self.edit_mode:
+            return
+        self.edit_mode = False
+        self.esc_shortcut.setEnabled(False)
+        if self.toolbar is not None:
+            self.toolbar.hide()
+        if self.layout.snapshot() == self._edit_snap and self.undo_stack.next_label() == "edit layout":
+            self.undo_stack.pop()          # nothing changed: no empty undo step
+        self._edit_snap = None
+        self.save_timer.stop()
+        self.layout.save()
+        self.apply_dock_mode()
+        for w in self.all_windows():
+            w.update()
+        self.update_undo_ui()
+        log.info("Edit layout: off (saved)")
+
+    def _on_escape(self):
+        if self.quick.isVisible():
+            self.quick.close_search()
+        elif self.popup.isVisible():
+            self.popup.close_animated()
+        else:
+            self.exit_edit_mode()
 
     def group_rects(self, exclude=None):
         out = []
@@ -116,8 +385,11 @@ class Controller:
                 continue
             w, h = group_size(g)
             out.append(QRect(g["x"], g["y"], w, h))
-        # keep the search bar + dock area free too
+        # keep the search bar, the buttons and the dock area free too
         out.append(QRect(self.search.x(), self.search.y(), self.search.width(), self.search.height() + 90))
+        out.append(self.actions.geometry())
+        if self.ui.get("dock_pos"):
+            out.append(self.dock.geometry().adjusted(0, 0, 0, 90))
         return out
 
     def notify(self, text):
@@ -150,13 +422,19 @@ class Controller:
                 "dock_visible": self.dock.isVisible(),
                 "tray_visible": self.tray.isVisible(),
                 "showcase": self.showcase,
+                "theme_choice": self.layout.prefs.get("theme"),
+                "theme_shown": self.theme_name,
+                "windows_light_mode": theme.windows_prefers_light(),
+                "glow_animating": self.glow_timer.isActive(),
+                "edit_mode": self.edit_mode,
+                "custom_themes": [t.get("name") for t in self.layout.custom_themes],
             }
             paths.atomic_write_json(paths.status_file(), status)
         except Exception:
             log.exception("Could not write status.json")
 
     def reassert_layer(self):
-        for w in [self.search, self.dock, *self.widgets.values()]:
+        for w in [self.search, self.actions, self.dock, *self.widgets.values()]:
             w.send_to_desktop_layer()
 
     # ------------------------------------------------------------------ syncing
@@ -173,11 +451,13 @@ class Controller:
         self.update_undo_ui()
 
     def checkpoint(self, label):
+        if self.edit_mode:
+            return      # Edit layout keeps ONE undo step for the whole session
         self.undo_stack.push(label, self.layout.snapshot())
 
     def update_undo_ui(self):
         en, label = self.undo_stack.can_undo(), self.undo_stack.next_label()
-        self.search.update_undo(en, label)
+        self.actions.update_undo(en, label)
         self.tray.update_undo(en, label)
 
     def rebuild_widgets(self):
@@ -522,6 +802,10 @@ class Controller:
         m = QMenu()
         m.addAction("Open", lambda: self.open_group(gid))
         m.addAction("Rename...", widget.start_rename)
+        if self.edit_mode:
+            m.addAction("\u2713  Done editing layout", self.exit_edit_mode)
+        else:
+            m.addAction("\u270E  Edit layout", self.enter_edit_mode)
         acc = m.addMenu("Accent color")
         for name, hexc in ACCENTS:
             a = acc.addAction(swatch(hexc), name, lambda h=hexc: self.set_accent(gid, h))
@@ -595,31 +879,44 @@ class Controller:
 
     # ------------------------------------------------------------------ undo
     def undo(self):
+        if self.edit_mode:
+            # undo inside Edit layout = put everything back the way it was when editing started
+            snap = self._edit_snap
+            self.layout.restore(snap)
+            self._after_restore()
+            log.info("Undid the changes of this Edit layout session")
+            return
         item = self.undo_stack.pop()
         if item is None:
             self.notify("Nothing to undo.")
             return
         label, snap = item
         self.layout.restore(snap)
-        self.sync_hidden()
-        self.commit()
-        self.place_dock()
+        self._after_restore()
         log.info("Undid: %s", label)
 
+    def _after_restore(self):
+        self.sync_hidden()
+        self.commit()
+        self.place_bars()
+        self.apply_theme()
+        if self.toolbar is not None:
+            self.toolbar.refresh_from_ui()
+
     # ------------------------------------------------------------------ tray / lifecycle
-    def show_settings(self):
-        self._settings = SettingsDialog(self)
-        self._settings.show()
-        self._settings.raise_()
-        self._settings.activateWindow()
+    def show_settings(self, section=0):
+        from .settings import SettingsWindow
+        if self.settings_win is None:
+            self.settings_win = SettingsWindow(self)
+            av = self.avail()
+            self.settings_win.move(av.center().x() - self.settings_win.width() // 2 - 260,
+                                   av.center().y() - self.settings_win.height() // 2)
+        self.settings_win.nav.setCurrentRow(section)
+        self.settings_win.show_on_top()
+        return self.settings_win
 
     def edit_layout(self):
-        box = QMessageBox(QMessageBox.Information, "Edit layout",
-                          "Full edit mode (sliders, moving the search bar) arrives in stage 3.\n\n"
-                          "Already working: drag a group to move it, drag its edges or corners to resize it, "
-                          "and right-click it for colors and Small tile / Big panel.")
-        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        box.exec()
+        self.enter_edit_mode()
 
     def attach_server(self, server):
         self._server = server
@@ -662,6 +959,9 @@ class Controller:
 
     def on_about_to_quit(self):
         from . import hotkey
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+            self.layout.save()
         hotkey.unregister(int(self.search.winId()))
         if not self.removed:
             self.restore_desktop()

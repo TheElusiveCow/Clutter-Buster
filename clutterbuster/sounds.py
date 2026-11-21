@@ -8,6 +8,8 @@ import wave
 from . import paths
 
 RATE = 44100
+SETTINGS = {"on": True, "volume": 50}   # Settings > Sounds (volume 0-100)
+_made_at = [None]
 
 
 def _tone(file_path, f_start, f_end, ms, volume=0.07):
@@ -27,17 +29,21 @@ def _tone(file_path, f_start, f_end, ms, volume=0.07):
         w.writeframes(bytes(frames))
 
 
-def ensure():
+def ensure(force=False):
+    """(Re)make the two little sounds at the chosen volume (Windows' simple player has no
+    volume knob, so the volume is baked into the sound files)."""
     os.makedirs(paths.sounds_dir(), exist_ok=True)
+    vol = 0.14 * max(0, min(100, int(SETTINGS["volume"]))) / 100
+    if _made_at[0] == vol and not force:
+        return
     specs = {"open.wav": (520, 820, 95), "close.wav": (760, 430, 85)}
     for name, (a, b, ms) in specs.items():
-        fp = os.path.join(paths.sounds_dir(), name)
-        if not os.path.exists(fp):
-            _tone(fp, a, b, ms)
+        _tone(os.path.join(paths.sounds_dir(), name), a, b, ms, volume=vol)
+    _made_at[0] = vol
 
 
 def play(name):
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not SETTINGS["on"] or int(SETTINGS["volume"]) <= 0:
         return
     try:
         import winsound

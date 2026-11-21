@@ -8,8 +8,9 @@ from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAn
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter
 
 from . import icons
-from .glass import DesktopLayerWindow, accept_drag, draw_glass, draw_shadow, parse_drop, read_item
-from .theme import qcolor
+from .glass import (DesktopLayerWindow, accept_drag, draw_edit_outline, draw_glass, draw_neon, draw_shadow,
+                    parse_drop, read_item)
+from .theme import qcolor, rad
 
 ICON = 34
 CELL = 52
@@ -118,8 +119,9 @@ class Dock(DesktopLayerWindow):
             return
         p.setOpacity(self.reveal)
         pr = self.panel_rect()
-        draw_shadow(p, pr, 16, 0.9)
-        draw_glass(p, pr, 16, fill_key="glass_fill_hover", strip=False)
+        draw_shadow(p, pr, rad(16), 0.9)
+        draw_glass(p, pr, rad(16), fill_key="glass_fill_hover", strip=False)
+        draw_neon(p, pr, rad(16))
         favs = self.favorites()
         if not favs:
             f = QFont(self.font())
@@ -130,10 +132,13 @@ class Dock(DesktopLayerWindow):
         for i, r in self.item_rects():
             if i == self._hover:
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(0, 0, 0, 16))
+                p.setBrush(qcolor("item_hover"))
                 p.drawRoundedRect(r.adjusted(3, 3, -3, -3), 12, 12)
             ir = QRectF(r.center().x() - ICON / 2, r.center().y() - ICON / 2, ICON, ICON)
             icons.icon_for(favs[i]).paint(p, ir.toRect())
+        if self.c.edit_mode:
+            p.setOpacity(1.0)
+            draw_edit_outline(p, pr, rad(16), handles=False)
         p.end()
 
     def _item_at(self, pos):
@@ -150,7 +155,18 @@ class Dock(DesktopLayerWindow):
         self._hover = None
         self.hide_timer.start(700)
 
+    def mousePressEvent(self, e):
+        if self.c.edit_mode and e.button() == Qt.LeftButton:
+            self.edit_press(e)
+
     def mouseMoveEvent(self, e):
+        if self.c.edit_mode:
+            self.setCursor(Qt.SizeAllCursor)
+            self.setToolTip("Drag to move (Edit layout)")
+            if e.buttons() & Qt.LeftButton:
+                self.edit_drag(e)
+            return
+        self.unsetCursor()
         h = self._item_at(e.position())
         if h != self._hover:
             self._hover = h
@@ -163,6 +179,11 @@ class Dock(DesktopLayerWindow):
             self.update()
 
     def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.c.edit_mode:
+            pt = self.edit_release()
+            if pt is not None:
+                self.c.bar_moved("dock_pos", self, pt)
+            return
         if e.button() != Qt.LeftButton or self.reveal < 0.9:
             return
         i = self._item_at(e.position())
@@ -177,12 +198,13 @@ class Dock(DesktopLayerWindow):
             return
         from PySide6.QtWidgets import QMenu
         path = favs[i]
+        was = self.pinned
         self.pinned = True
         m = QMenu()
         m.addAction("Open", lambda: self.c.launch(path))
         m.addAction("Remove from favorites", lambda: self.c.remove_favorite(path))
         m.exec(e.globalPos())
-        self.pinned = False
+        self.pinned = was
         self.hide_timer.start(700)
 
     # ------------------------------------------------------------ drops

@@ -79,8 +79,25 @@ class Layout:
     def favorites(self, value):
         self.extra["favorites"] = list(value)
 
+    @property
+    def ui(self):
+        """Layout look: bar/dock positions, popup size and the four sliders. Part of Undo."""
+        return self.extra.setdefault("ui", {})
+
+    @property
+    def prefs(self):
+        """Settings that are not part of Undo: theme choice, dock auto-hide, sounds."""
+        p = self.extra.setdefault("prefs", {})
+        for k, v in (("theme", "auto"), ("dock_autohide", True), ("sounds", True), ("volume", 50)):
+            p.setdefault(k, v)
+        return p
+
+    @property
+    def custom_themes(self):
+        return self.extra.setdefault("custom_themes", [])
+
     def snapshot(self):
-        return copy.deepcopy({"groups": self.groups, "favorites": self.favorites})
+        return copy.deepcopy({"groups": self.groups, "favorites": self.favorites, "ui": self.ui})
 
     def restore(self, snap):
         if isinstance(snap, list):  # stage 1 style snapshot
@@ -88,6 +105,8 @@ class Layout:
         snap = copy.deepcopy(snap)
         self.groups = snap["groups"]
         self.favorites = snap.get("favorites", [])
+        if "ui" in snap:
+            self.extra["ui"] = snap["ui"]
 
 
 class UndoStack:

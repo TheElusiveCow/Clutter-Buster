@@ -12,13 +12,13 @@ Hovering only highlights / shows labels - it NEVER opens a group.
 import math
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPen
 from PySide6.QtWidgets import QLineEdit
 
 from . import icons
-from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_glass, draw_shadow,
-                    read_item, start_item_drag)
-from .theme import accent_color, qcolor
+from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_edit_outline, draw_glass,
+                    draw_neon, draw_shadow, read_item, start_item_drag)
+from .theme import THEME, accent_color, qcolor, rad
 
 DRAG_THRESHOLD = 6
 EDGE = 7
@@ -40,10 +40,11 @@ def group_size(g):
     return tuple(s) if s else default_size(g.get("mode", "tile"))
 
 
-def grid_layout(w, h, n):
-    """Biggest square cell that fits n items in w x h. Pages only if even tiny cells don't fit."""
+def grid_layout(w, h, n, max_cell=112):
+    """Biggest square cell that fits n items in w x h. Pages only if even tiny cells don't fit.
+    max_cell follows the Icon size slider (64 px icons -> 112 px cells)."""
     n = max(1, n)
-    for c in range(112, 27, -2):
+    for c in range(int(max(30, max_cell)), 27, -2):
         cols, rows = int(w // c), int(h // c)
         if cols >= 1 and rows >= 1 and cols * rows >= n:
             return cols, rows, c, 1
@@ -112,7 +113,7 @@ class GroupWidget(DesktopLayerWindow):
         g = self.group
         cr = self.content_rect()
         n = len(g["items"]) if g else 0
-        cols, rows, cell, pages = grid_layout(cr.width(), cr.height(), n)
+        cols, rows, cell, pages = grid_layout(cr.width(), cr.height(), n, THEME["popup_icon"] + 48)
         self.page = min(self.page, pages - 1)
         return cr, cols, rows, cell, pages
 
@@ -152,32 +153,50 @@ class GroupWidget(DesktopLayerWindow):
         return e
 
     # ------------------------------------------------------------ painting
-    def paintEvent(self, _e):
+    def radius(self):
+        if self.mode == "tile":
+            return rad(max(8.0, self.glass_rect().width() * 0.25))
+        return rad(16)
+
+    def paint_body(self, p):
         g = self.group
         if g is None:
             return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(255, 255, 255, 1))  # keeps edges grabbable for resizing
         if self.mode == "tile":
             self._paint_tile(p, g)
         else:
             self._paint_panel(p, g)
-        p.end()
+
+    def paint_overlay(self, p):
+        """Drawn every frame on top of the cached picture: neon edge, badge, edit outline."""
+        g = self.group
+        if g is None:
+            return
+        r = self.glass_rect()
+        acc = accent_color(g)
+        draw_neon(p, r, self.radius(), accent=acc)
+        if g.get("badge"):
+            if self.mode == "tile":
+                draw_badge(p, QPointF(r.right() - 2, r.top() + 2), g["badge"], acc)
+            else:
+                draw_badge(p, QPointF(self.menu_rect().left() - 14, self.menu_rect().center().y()), g["badge"], acc)
+        if self.c.edit_mode:
+            draw_edit_outline(p, r, self.radius(), acc)
 
     def _paint_tile(self, p, g):
         r = self.glass_rect()
         s = r.width()
-        rad = max(8.0, s * 0.25)
+        rr = self.radius()
         acc = accent_color(g)
-        draw_shadow(p, r, rad, 0.9)
-        draw_glass(p, r, rad, hover=self._hover or self._active, glow=self._drop_hover, strip=False)
-        ring = QColor(acc)
-        ring.setAlpha(150 if self._hover else 95)
-        p.setPen(QPen(ring, 1.6))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rad - 1, rad - 1)
+        draw_shadow(p, r, rr, 0.9)
+        draw_glass(p, r, rr, hover=self._hover or self._active, glow=self._drop_hover, strip=False)
+        if not THEME.get("glow"):
+            ring = QColor(acc)
+            ring.setAlpha(min(255, int((60 + 90 * THEME.get("glow_strength", 0.6)) * (1.4 if self._hover else 1))))
+            p.setPen(QPen(ring, 1.6))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rr - 1, rr - 1)
         pad = s * 0.13
         cell = (s - 2 * pad) / 3
         isz = cell * 0.84
@@ -186,8 +205,6 @@ class GroupWidget(DesktopLayerWindow):
             x = r.x() + pad + col * cell + (cell - isz) / 2
             y = r.y() + pad + row * cell + (cell - isz) / 2
             icons.icon_for(it["path"]).paint(p, QRect(round(x), round(y), round(isz), round(isz)))
-        if g.get("badge"):
-            draw_badge(p, QPointF(r.right() - 2, r.top() + 2), g["badge"], acc)
         if self.labels_visible() and not (self.editor and self.editor.isVisible()):
             f = QFont(self.font())
             f.setPointSizeF(9)
@@ -203,8 +220,8 @@ class GroupWidget(DesktopLayerWindow):
     def _paint_panel(self, p, g):
         r = self.glass_rect()
         acc = accent_color(g)
-        draw_shadow(p, r, 16, 1.0)
-        draw_glass(p, r, 16, fill_key="panel_fill", glow=self._drop_hover, strip=True)
+        draw_shadow(p, r, self.radius(), 1.0)
+        draw_glass(p, r, self.radius(), fill_key="panel_fill", glow=self._drop_hover, strip=True)
         # title bar: accent dot + name + "..." menu
         p.setPen(Qt.NoPen)
         p.setBrush(acc)
@@ -222,8 +239,6 @@ class GroupWidget(DesktopLayerWindow):
             p.drawText(QRectF(r.left() + 30, r.top(), r.width(), TITLE_H + 2), Qt.AlignLeft | Qt.AlignVCenter, name)
         p.setPen(qcolor("hint_text"))
         p.drawText(mr, Qt.AlignCenter, "\u2022\u2022\u2022")
-        if g.get("badge"):
-            draw_badge(p, QPointF(mr.left() - 14, mr.center().y()), g["badge"], acc)
         # items
         cr, cols, rows, cell, pages = self.panel_layout()
         show_labels = cell >= 64
@@ -236,8 +251,8 @@ class GroupWidget(DesktopLayerWindow):
             card = ir.adjusted(4, 4, -4, -4)
             hot = idx == self._hover_item or idx == self._drop_item
             p.setPen(QPen(acc if idx == self._drop_item else qcolor("card_border"), 1.5 if hot else 1))
-            p.setBrush(qcolor("card_fill"))
-            p.drawRoundedRect(card, max(6, cell * 0.16), max(6, cell * 0.16))
+            p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
+            p.drawRoundedRect(card, rad(max(6, cell * 0.16)), rad(max(6, cell * 0.16)))
             if show_labels:
                 isz = cell * 0.46
                 icon_r = QRectF(card.center().x() - isz / 2, card.top() + card.height() * 0.12, isz, isz)
@@ -272,7 +287,7 @@ class GroupWidget(DesktopLayerWindow):
                 if b.bottom() > self.height() - 2:
                     b.moveBottom(ir.top() + 2)
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(30, 30, 36, 220))
+                p.setBrush(qcolor("bubble_fill"))
                 p.drawRoundedRect(b, 7, 7)
                 p.setPen(QColor(255, 255, 255))
                 p.drawText(b, Qt.AlignCenter, t)
@@ -330,6 +345,8 @@ class GroupWidget(DesktopLayerWindow):
             cur = self._cursor_for(self.edges_at(pos))
             if cur is not None:
                 self.setCursor(cur)
+            elif self.c.edit_mode:
+                self.setCursor(Qt.SizeAllCursor)
             else:
                 self.unsetCursor()
             hv = self.item_at(pos)
@@ -399,7 +416,7 @@ class GroupWidget(DesktopLayerWindow):
                 self.c.open_group(self.gid)                 # big panel: click the title
             elif kind == "menu":
                 self.c.group_menu(self.gid, self, self.mapToGlobal(self.menu_rect().bottomLeft().toPoint()))
-            elif kind == "item":
+            elif kind == "item" and not self.c.edit_mode:   # edit mode never launches things
                 g = self.group
                 if g and self._press_item is not None and self._press_item < len(g["items"]):
                     self.c.clear_badge(self.gid)

@@ -8,8 +8,8 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
 from . import desktop_layer, fuzzy
-from .glass import draw_glass, draw_shadow
-from .theme import qcolor
+from .glass import bring_to_top, draw_glass, draw_neon, draw_shadow
+from .theme import THEME, css_rgba, qcolor, rad
 
 ROW_H = 46
 MAX_ROWS = 8
@@ -32,21 +32,26 @@ class QuickSearch(QWidget):
         self._hover = None
         self.edit = QLineEdit(self)
         self.edit.setPlaceholderText("Search shortcuts, files, folders and websites")
-        self.edit.setStyleSheet("QLineEdit{background:transparent;border:none;color:#1c1c22;font-size:15pt;"
-                                "selection-background-color:#0A84FF;}")
         self.edit.textChanged.connect(self._filter)
         self.edit.installEventFilter(self)
         self.icon = QLabel("\U0001F50D", self)
-        self.icon.setStyleSheet("background:transparent;font-size:15pt;color:#6b6b75;")
         self.hint = QLabel("Esc", self)
-        self.hint.setStyleSheet("background:rgba(0,0,0,12);color:#6b6b75;border-radius:6px;"
-                                "padding:2px 7px;font-size:9pt;")
+        self.restyle()
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.fade.setDuration(120)
         self.fade.setEasingCurve(QEasingCurve.OutCubic)
 
+    def restyle(self):
+        """Match the current theme (Clean White / Neon Gamer / custom)."""
+        self.edit.setStyleSheet(f"QLineEdit{{background:transparent;border:none;color:{css_rgba('search_text')};"
+                                f"font-size:15pt;selection-background-color:{THEME['default_accent']};}}")
+        self.icon.setStyleSheet(f"background:transparent;font-size:15pt;color:{css_rgba('hint_text')};")
+        self.hint.setStyleSheet(f"background:{css_rgba('item_hover')};color:{css_rgba('hint_text')};"
+                                "border-radius:6px;padding:2px 7px;font-size:9pt;")
+
     # ------------------------------------------------------------ open / close
     def open(self, anchor_center_x, top_y, text=""):
+        self.restyle()
         self.entries = self.c.search_entries()
         self.edit.setText(text)
         self._filter(text)
@@ -57,6 +62,7 @@ class QuickSearch(QWidget):
         self.raise_()
         self.activateWindow()
         desktop_layer.force_foreground(int(self.winId()))
+        bring_to_top(self)
         self.edit.setFocus()
         self.edit.end(False)
         self.fade.stop()
@@ -139,10 +145,11 @@ class QuickSearch(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(M, M, W, self.height() - 2 * M)
-        draw_shadow(p, r, 20, 1.4, layers=10)
-        draw_glass(p, r, 20, fill_key="popup_fill")
+        draw_shadow(p, r, rad(20), 1.4, layers=10)
+        draw_glass(p, r, rad(20), fill_key="popup_fill")
+        draw_neon(p, r, rad(20))
         if self.results or self.edit.text().strip():
-            p.setPen(QPen(QColor(0, 0, 0, 18), 1))
+            p.setPen(QPen(qcolor("divider"), 1))
             p.drawLine(int(r.left() + 16), int(r.top() + BAR_H), int(r.right() - 16), int(r.top() + BAR_H))
         nf = QFont(self.font())
         nf.setPointSizeF(10.5)
@@ -159,11 +166,11 @@ class QuickSearch(QWidget):
             rr = self.row_rect(vi)
             if i == self.sel:
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(10, 132, 255))
+                p.setBrush(QColor(THEME["default_accent"]))
                 p.drawRoundedRect(rr, 10, 10)
             elif i == self._hover:
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(0, 0, 0, 14))
+                p.setBrush(qcolor("item_hover"))
                 p.drawRoundedRect(rr, 10, 10)
             icon.paint(p, int(rr.left() + 10), int(rr.top() + 7), 28, 28)
             p.setFont(nf)

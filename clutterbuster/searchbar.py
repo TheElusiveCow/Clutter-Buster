@@ -1,43 +1,114 @@
-"""The always-visible bar at the top center (Clean White mockup style):
+"""The always-visible bars at the top (on the desktop layer, behind your windows):
 
-  [ magnifier  Search shortcuts and files...     Ctrl+Space ]  [ + New Group ]  [ Undo ]
+  [ magnifier  Search shortcuts and files...     Ctrl+Space ]   <- SearchBar
+                                                [ + New Group ] [ Undo ]   <- ActionBar
 
 Clicking the search box (or pressing Ctrl+Space anywhere) opens the quick search.
-The bar itself lives on the desktop layer, behind your windows.
+In Edit layout both bars get a dashed outline and can be dragged somewhere else
+(they snap to a 16px grid). Outside Edit layout they stay put.
 """
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 
 from . import hotkey
-from .glass import DesktopLayerWindow, draw_glass, draw_shadow
-from .theme import qcolor
+from .glass import DesktopLayerWindow, draw_edit_outline, draw_glass, draw_neon, draw_shadow
+from .theme import qcolor, rad
 
 SEARCH_W, NEW_W, UNDO_W, GAP, H, M = 520, 150, 96, 10, 46, 10
 
 
-class SearchBar(DesktopLayerWindow):
+class _Bar(DesktopLayerWindow):
+    ui_key = ""
+
     def __init__(self, controller):
         super().__init__()
         self.c = controller
-        self.setFixedSize(SEARCH_W + NEW_W + UNDO_W + 2 * GAP + 2 * M, H + 2 * M)
         self.setMouseTracking(True)
         self._hover = None
-        self._undo_enabled = False
-        self._undo_label = ""
+
+    def boxes(self):
+        return []
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(255, 255, 255, 1))
+        for key, r in self.boxes():
+            rr = rad(14)
+            draw_shadow(p, r, rr, 0.8)
+            draw_glass(p, r, rr, fill_key="glass_fill_hover", hover=self._hover == key, strip=(key == "search"))
+            draw_neon(p, r, rr)
+        self.paint_contents(p)
+        if self.c.edit_mode:
+            for _key, r in self.boxes():
+                draw_edit_outline(p, r, rad(14), handles=False)
+        p.end()
+
+    def paint_contents(self, p):
+        pass
+
+    def _hit(self, pos):
+        for key, r in self.boxes():
+            if r.contains(pos):
+                return key
+        return None
+
+    # edit layout: drag the whole bar
+    def mousePressEvent(self, e):
+        if self.c.edit_mode and e.button() == Qt.LeftButton:
+            self.edit_press(e)
+
+    def mouseMoveEvent(self, e):
+        if self.c.edit_mode:
+            self.setCursor(Qt.SizeAllCursor)
+            self.setToolTip("Drag to move (Edit layout)")
+            if e.buttons() & Qt.LeftButton:
+                self.edit_drag(e)
+            return
+        h = self._hit(e.position())
+        if h != self._hover:
+            self._hover = h
+            self.on_hover(h)
+            self.update()
+
+    def on_hover(self, h):
+        pass
+
+    def leaveEvent(self, e):
+        self._hover = None
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        if self.c.edit_mode:
+            pt = self.edit_release()
+            if pt is not None:
+                self.c.bar_moved(self.ui_key, self, pt)
+            return
+        self.on_click(self._hit(e.position()))
+
+    def on_click(self, key):
+        pass
+
+
+class SearchBar(_Bar):
+    ui_key = "search_pos"
+
+    def __init__(self, controller):
+        super().__init__(controller)
+        self.setFixedSize(SEARCH_W + 2 * M, H + 2 * M)
         self.hotkey_ok = None
 
     def search_rect(self):
         return QRectF(M, M, SEARCH_W, H)
 
-    def new_rect(self):
-        return QRectF(M + SEARCH_W + GAP, M, NEW_W, H)
+    def boxes(self):
+        return [("search", self.search_rect())]
 
-    def undo_rect(self):
-        return QRectF(M + SEARCH_W + GAP + NEW_W + GAP, M, UNDO_W, H)
-
-    def place(self, avail):
-        # centre the SEARCH box on the screen (buttons sit to its right)
-        self.move(int(avail.center().x() - M - SEARCH_W / 2), avail.top() + 12)
+    def default_pos(self, avail):
+        # centre the search box on the screen
+        return int(avail.center().x() - M - SEARCH_W / 2), avail.top() + 12
 
     def search_global_center_x(self):
         return self.mapToGlobal(self.search_rect().center().toPoint()).x()
@@ -51,33 +122,15 @@ class SearchBar(DesktopLayerWindow):
             self.c.open_quick_search()
 
     def update_undo(self, enabled, label):
-        self._undo_enabled = enabled
-        self._undo_label = label
-        self.setToolTip("")
-        self.update()
+        pass
 
-    def mark_dirty(self):
-        pass  # quick search reloads its list every time it opens
-
-    # ------------------------------------------------------------ painting
-    def paintEvent(self, _e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(255, 255, 255, 1))
+    def paint_contents(self, p):
         f = QFont(self.font())
         f.setPointSizeF(11)
-        bf = QFont(self.font())
-        bf.setPointSizeF(10.5)
-        bf.setWeight(QFont.DemiBold)
         hf = QFont(self.font())
         hf.setPointSizeF(9)
-        for key, r in (("search", self.search_rect()), ("new", self.new_rect()), ("undo", self.undo_rect())):
-            rad = 14
-            draw_shadow(p, r, rad, 0.8)
-            draw_glass(p, r, rad, fill_key="glass_fill_hover", hover=self._hover == key, strip=(key == "search"))
-        # search box contents
         sr = self.search_rect()
-        p.setPen(QPen(QColor(90, 90, 100), 2))
+        p.setPen(QPen(qcolor("icon_glyph"), 2))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(QPointF(sr.left() + 25, sr.center().y() - 2), 7, 7)
         p.drawLine(QPointF(sr.left() + 30, sr.center().y() + 3), QPointF(sr.left() + 35, sr.center().y() + 8))
@@ -87,43 +140,57 @@ class SearchBar(DesktopLayerWindow):
         p.setFont(hf)
         hint = "Ctrl+Space" if self.hotkey_ok is not False else "click to search"
         p.drawText(sr.adjusted(0, 0, -16, 0), Qt.AlignRight | Qt.AlignVCenter, hint)
-        # buttons
+
+    def on_hover(self, h):
+        self.setCursor(Qt.IBeamCursor if h == "search" else Qt.ArrowCursor)
+        self.setToolTip("Search (Ctrl+Space)" if h else "")
+
+    def on_click(self, key):
+        if key == "search":
+            self.c.open_quick_search()
+
+
+class ActionBar(_Bar):
+    ui_key = "actions_pos"
+
+    def __init__(self, controller):
+        super().__init__(controller)
+        self.setFixedSize(NEW_W + UNDO_W + GAP + 2 * M, H + 2 * M)
+        self._undo_enabled = False
+        self._undo_label = ""
+
+    def new_rect(self):
+        return QRectF(M, M, NEW_W, H)
+
+    def undo_rect(self):
+        return QRectF(M + NEW_W + GAP, M, UNDO_W, H)
+
+    def boxes(self):
+        return [("new", self.new_rect()), ("undo", self.undo_rect())]
+
+    def update_undo(self, enabled, label):
+        self._undo_enabled = enabled
+        self._undo_label = label
+        self.update()
+
+    def paint_contents(self, p):
+        bf = QFont(self.font())
+        bf.setPointSizeF(10.5)
+        bf.setWeight(QFont.DemiBold)
         p.setFont(bf)
         p.setPen(qcolor("button_text"))
         p.drawText(self.new_rect(), Qt.AlignCenter, "+  New Group")
-        p.setPen(qcolor("button_text") if self._undo_enabled else QColor(28, 28, 34, 90))
+        p.setPen(qcolor("button_text") if self._undo_enabled else qcolor("disabled_text"))
         p.drawText(self.undo_rect(), Qt.AlignCenter, "\u21B6  Undo")
-        p.end()
 
-    # ------------------------------------------------------------ mouse
-    def _hit(self, pos):
-        for key, r in (("search", self.search_rect()), ("new", self.new_rect()), ("undo", self.undo_rect())):
-            if r.contains(pos):
-                return key
-        return None
+    def on_hover(self, h):
+        self.setCursor(Qt.PointingHandCursor if h else Qt.ArrowCursor)
+        tips = {"undo": (f"Undo: {self._undo_label}" if self._undo_enabled else "Nothing to undo"),
+                "new": "Make a new empty group"}
+        self.setToolTip(tips.get(h, ""))
 
-    def mouseMoveEvent(self, e):
-        h = self._hit(e.position())
-        if h != self._hover:
-            self._hover = h
-            self.setCursor(Qt.PointingHandCursor if h in ("new", "undo") else
-                           (Qt.IBeamCursor if h == "search" else Qt.ArrowCursor))
-            tips = {"undo": (f"Undo: {self._undo_label}" if self._undo_enabled else "Nothing to undo"),
-                    "new": "Make a new empty group", "search": "Search (Ctrl+Space)"}
-            self.setToolTip(tips.get(h, ""))
-            self.update()
-
-    def leaveEvent(self, e):
-        self._hover = None
-        self.update()
-
-    def mouseReleaseEvent(self, e):
-        if e.button() != Qt.LeftButton:
-            return
-        h = self._hit(e.position())
-        if h == "search":
-            self.c.open_quick_search()
-        elif h == "new":
+    def on_click(self, key):
+        if key == "new":
             self.c.create_group()
-        elif h == "undo" and self._undo_enabled:
+        elif key == "undo" and self._undo_enabled:
             self.c.undo()

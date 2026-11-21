@@ -2,12 +2,12 @@
 and the base desktop-layer window."""
 import json
 
-from PySide6.QtCore import QByteArray, QMimeData, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QDrag, QLinearGradient, QPainterPath, QPen
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QDrag, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from . import desktop_layer
-from .theme import THEME, qcolor, rgb_gradient
+from .theme import THEME, neon_gradient, qcolor, rgb_gradient
 
 
 def rounded(rect, radius):
@@ -41,10 +41,12 @@ def draw_glass(p, rect, radius, fill_key="glass_fill", hover=False, glow=False, 
     shine.setColorAt(1, QColor(255, 255, 255, 0))
     p.setClipPath(path)
     p.fillRect(rect, shine)
-    if strip:
-        h = THEME["strip_height"]
+    h = THEME["strip_height"]
+    if strip and h:
+        # Clean White: the thin RGB strip on top (a little brighter with more glow)
+        alpha = int(150 + 105 * THEME.get("glow_strength", 0.6))
         p.fillRect(QRectF(rect.x(), rect.y(), rect.width(), h),
-                   rgb_gradient(rect.left(), 0, rect.right(), 0))
+                   rgb_gradient(rect.left(), 0, rect.right(), 0, min(255, alpha)))
     p.setClipping(False)
     p.setPen(QPen(qcolor("glass_border"), 1.0))
     p.setBrush(Qt.NoBrush)
@@ -55,6 +57,55 @@ def draw_glass(p, rect, radius, fill_key="glass_fill", hover=False, glow=False, 
             p.setPen(QPen(QColor(r, g, b, 150 // i), 1.6))
             p.drawRoundedRect(rect.adjusted(-i, -i, i, i), radius + i, radius + i)
     p.restore()
+
+
+def draw_neon(p, rect, radius, accent=None, strength=None):
+    """Neon Gamer: a glowing, slowly turning RGB edge around a rounded shape.
+    Does nothing in themes without glow (Clean White) or with the glow slider at 0."""
+    if not THEME.get("glow"):
+        return
+    s = THEME.get("glow_strength", 0.6) if strength is None else strength
+    if s <= 0.01:
+        return
+    p.save()
+    p.setBrush(Qt.NoBrush)
+    c = rect.center()
+    for grow, width, a in ((3.0, 7.0, 0.10), (1.6, 4.0, 0.22), (0.5, 2.2, 0.55), (0.0, 1.3, 1.0)):
+        alpha = int(255 * min(1.0, a * (0.35 + 0.65 * s) * (1.0 if a >= 1 else 0.6 + 0.8 * s)))
+        p.setPen(QPen(QBrush(neon_gradient(c, alpha, accent)), width))
+        r = rect.adjusted(-grow, -grow, grow, grow)
+        p.drawRoundedRect(r, radius + grow, radius + grow)
+    p.restore()
+
+
+def draw_edit_outline(p, rect, radius, color=None, handles=True):
+    """Edit layout: a dashed outline with little round handles on the corners and edges."""
+    col = QColor(color) if color is not None else QColor(THEME["default_accent"])
+    p.save()
+    p.setBrush(Qt.NoBrush)
+    pen = QPen(col, 1.6, Qt.DashLine)
+    pen.setDashPattern([4, 3])
+    p.setPen(pen)
+    p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+    if handles:
+        r = rect.adjusted(-3, -3, 3, 3)
+        pts = [r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight(),
+               QPointF(r.center().x(), r.top()), QPointF(r.center().x(), r.bottom()),
+               QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y())]
+        p.setPen(QPen(col, 1.4))
+        p.setBrush(QColor(255, 255, 255))
+        for pt in pts:
+            p.drawEllipse(pt, 3.6, 3.6)
+    p.restore()
+
+
+def bring_to_top(widget):
+    """Pop-up style windows (popup, search, Settings, edit toolbar) sit above everything."""
+    def go():
+        if widget.isVisible():
+            desktop_layer.make_topmost(int(widget.winId()))
+    QTimer.singleShot(0, go)
+    QTimer.singleShot(250, go)
 
 
 def safe_drop_action(event):
@@ -189,13 +240,73 @@ def ask(title, text, yes_text="Yes", no_text="Cancel", danger=False):
 
 class DesktopLayerWindow(QWidget):
     """A frameless, see-through window that lives on the desktop layer
-    (behind all normal windows), with no taskbar button."""
+    (behind all normal windows), with no taskbar button.
+
+    Painting is split in two: paint_body() (cached - icons, glass, text) and
+    paint_overlay() (the animated neon edge, badges, edit outlines). The glow animation
+    only repaints the overlay on top of the cached picture, which keeps CPU use low."""
 
     def __init__(self):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self._hwnd = None
+        self._dirty = True
+        self._cache = None
+        self._cache_key = None
+        self._emove = None   # edit-mode move: (press global pos, window pos)
+
+    # ---------------------------------------------------------- cached painting
+    def update(self, *a):
+        self._dirty = True
+        QWidget.update(self, *a)
+
+    def glow_update(self):
+        QWidget.update(self)
+
+    def paint_body(self, p):
+        pass
+
+    def paint_overlay(self, p):
+        pass
+
+    def paintEvent(self, _e):
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr)
+        if self._dirty or self._cache is None or self._cache_key != key:
+            pm = QPixmap(max(1, int(self.width() * dpr)), max(1, int(self.height() * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            bp = QPainter(pm)
+            bp.setRenderHint(QPainter.Antialiasing)
+            bp.setRenderHint(QPainter.SmoothPixmapTransform)
+            self.paint_body(bp)
+            bp.end()
+            self._cache, self._cache_key, self._dirty = pm, key, False
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setCompositionMode(QPainter.CompositionMode_Source)
+        p.drawPixmap(0, 0, self._cache)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        self.paint_overlay(p)
+        p.end()
+
+    # ---------------------------------------------------------- edit-mode moving
+    def edit_press(self, e):
+        self._emove = (e.globalPosition().toPoint(), self.pos())
+
+    def edit_drag(self, e):
+        if self._emove is None:
+            return False
+        self.move(self._emove[1] + (e.globalPosition().toPoint() - self._emove[0]))
+        return True
+
+    def edit_release(self):
+        """Ends an edit-mode move; returns the window's new top-left snapped to a 16px grid."""
+        if self._emove is None:
+            return None
+        self._emove = None
+        return QPoint(round(self.x() / 16) * 16, round(self.y() / 16) * 16)
 
     def showEvent(self, e):
         super().showEvent(e)

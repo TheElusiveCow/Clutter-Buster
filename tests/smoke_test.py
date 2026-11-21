@@ -1,4 +1,4 @@
-"""Automated check of the safety logic and stage 2 features, run off-screen with a FAKE desktop.
+"""Automated check of the safety logic and stage 2 + 3 features, run off-screen with a FAKE desktop.
 
 It never touches real files: it builds a temporary pretend desktop and a
 temporary app-data folder, and (on non-Windows) the Hidden flag is simulated.
@@ -144,6 +144,103 @@ assert df.is_hidden(notes)
 c.move_group(gid, 333, 333)
 g = c.layout.group(gid)
 assert (g["x"] - c.avail().left() - 8) % 16 == 0
+# ================= stage 3 =================
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from clutterbuster import desktop_layer, theme  # noqa: E402
+# --- outside Edit layout the search bar / buttons / dock can't be dragged
+before_pos = c.search.pos()
+QTest.mousePress(c.search, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))
+QTest.mouseMove(c.search, QPoint(80, 60))
+QTest.mouseRelease(c.search, Qt.LeftButton, Qt.NoModifier, QPoint(80, 60))
+assert c.search.pos() == before_pos and "search_pos" not in c.ui
+# --- themes: two built-ins, Auto follows Windows light/dark
+c.set_theme_choice("Neon Gamer")
+assert theme.THEME["dark"] and theme.THEME["glow"] and c.glow_timer.isActive(), "neon glow animates"
+c.widgets[g2].grab().save(os.path.join(tmp, "panel-neon.png"))
+c.search.grab().save(os.path.join(tmp, "search-neon.png"))
+desktop_layer_cov = desktop_layer.desktop_covered
+desktop_layer.desktop_covered = lambda: True          # pretend a game is full screen
+c._check_covered()
+assert not c.glow_timer.isActive(), "glow pauses behind full-screen apps"
+desktop_layer.desktop_covered = desktop_layer_cov
+c._check_covered()
+assert c.glow_timer.isActive()
+c.set_theme_choice("Clean White")
+assert not theme.THEME["dark"] and not c.glow_timer.isActive()
+real_light = theme.windows_prefers_light
+theme.windows_prefers_light = lambda: False           # Windows in dark mode
+c.set_theme_choice(theme.AUTO)
+assert c.theme_name == "Neon Gamer"
+theme.windows_prefers_light = lambda: True            # ...switches to light mode
+c._check_windows_theme()
+assert c.theme_name == "Clean White", "Auto follows Windows"
+theme.windows_prefers_light = real_light
+# --- Edit layout: everything movable, live sliders, ONE undo step per session
+n_undo = len(c.undo_stack._items)
+c.enter_edit_mode()
+c.exit_edit_mode()
+assert len(c.undo_stack._items) == n_undo, "no empty undo step"
+gx = c.layout.group(g2)["x"]
+c.enter_edit_mode()
+assert c.edit_mode and c.toolbar.isVisible() and c.dock.pinned
+c.toolbar.grab().save(os.path.join(tmp, "edit-toolbar.png"))
+c.widgets[g2].grab().save(os.path.join(tmp, "panel-edit.png"))
+c.move_group(g2, gx + 160, c.layout.group(g2)["y"])
+c.toolbar.rows["icon_size"].slider.setValue(80)          # live
+assert theme.THEME["popup_icon"] == 80
+c.set_ui("per_row", 4)
+assert c.popup.metrics()[2] == 4
+c.bar_moved("search_pos", c.search, QPoint(240, 192))
+c.bar_moved("actions_pos", c.actions, QPoint(400, 304))
+c.bar_moved("dock_pos", c.dock, QPoint(96, 400))
+assert c.search.pos() == QPoint(240, 192) and c.actions.pos() == QPoint(400, 304)
+c.open_group(g2)
+c.popup.progress = 1.0
+c.ui["popup_size"] = [700, 420]
+c.ui_changed("popup_size")
+assert c.popup.panel_size() == (700, 420) and c.popup.per_page() == 4 * 2
+c.popup.grab().save(os.path.join(tmp, "popup-edit.png"))
+c.popup.hide()
+c.popup.gid = None
+c._on_escape()                                            # Esc = Done
+assert not c.edit_mode and not c.toolbar.isVisible()
+assert len(c.undo_stack._items) == n_undo + 1 and c.undo_stack.next_label() == "edit layout"
+import json  # noqa: E402
+saved = json.load(open(paths.layout_file()))
+assert saved["ui"]["search_pos"] == [240, 192] and saved["ui"]["icon_size"] == 80
+c.undo()
+assert "search_pos" not in c.ui and c.layout.group(g2)["x"] == gx and theme.THEME["popup_icon"] == 64
+assert c.search.pos() == before_pos
+# --- custom theme maker + Settings window
+win = c.show_settings(0)
+assert win.isVisible()
+win.grab().save(os.path.join(tmp, "settings.png"))
+for i in range(5):
+    win.nav.setCurrentRow(i)
+win.open_maker()
+win.maker.name.setText("Purple Night")
+win.maker.grab().save(os.path.join(tmp, "theme-maker.png"))
+win.maker.save()
+assert [t["name"] for t in c.layout.custom_themes] == ["Purple Night"] and c.theme_name == "Purple Night"
+assert theme.THEME.get("custom") and theme.THEME["dark"]
+assert any(win.themes.item(i).data(Qt.UserRole) == "Purple Night" for i in range(win.themes.count()))
+assert c.delete_custom_theme("Purple Night", confirm=False)
+assert c.layout.custom_themes == [] and c.layout.prefs["theme"] == theme.AUTO
+c.set_pref("volume", 30)
+c.set_pref("dock_autohide", False)
+assert c.dock.pinned
+c.set_pref("dock_autohide", True)
+win.close()
+assert c.settings_win is None
+# --- new groups avoid the first two icon columns and other groups
+ng = c.create_group("Placed", edit=False)
+gg = c.layout.group(ng)
+assert gg["x"] >= c.avail().left() + 176
+from PySide6.QtCore import QRect  # noqa: E402
+r_new = QRect(gg["x"], gg["y"], 96, 112)
+assert not any(r_new.intersects(o) for o in c.group_rects(exclude=ng))
+c.undo()
 # --- delete group -> items visible again; Brian's own hidden file stays hidden
 c.delete_group(gid)
 assert not df.is_hidden(chrome) and df.is_hidden(mine)
