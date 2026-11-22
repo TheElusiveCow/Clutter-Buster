@@ -68,7 +68,10 @@ def norm(p):
 def desktop_dirs():
     """Your own Desktop folder (even if OneDrive moved it) and the Public Desktop."""
     if os.environ.get("CLUTTERBUSTER_SHOWCASE"):
-        return []  # showcase/demo mode never looks at (or touches) your real desktop
+        # showcase/demo mode never looks at (or touches) your real desktop; it may use a
+        # pretend desktop folder that the showcase made in %TEMP%
+        demo = os.environ.get("CLUTTERBUSTER_DEMO_DESKTOP", "")
+        return [demo] if demo and os.path.isdir(demo) else []
     dirs = []
     if IS_WIN:
         for guid in (FOLDERID_DESKTOP, FOLDERID_PUBLIC_DESKTOP):

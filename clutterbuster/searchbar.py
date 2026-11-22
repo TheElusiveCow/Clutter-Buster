@@ -1,7 +1,7 @@
 """The always-visible bars at the top (on the desktop layer, behind your windows):
 
   [ magnifier  Search shortcuts and files...     Ctrl+Space ]   <- SearchBar
-                                                [ + New Group ] [ Undo ]   <- ActionBar
+                                                [ + New Group ] [ Auto ] [ Undo ]   <- ActionBar
 
 Clicking the search box (or pressing Ctrl+Space anywhere) opens the quick search.
 In Edit layout both bars get a dashed outline and can be dragged somewhere else
@@ -14,7 +14,7 @@ from . import hotkey
 from .glass import DesktopLayerWindow, draw_edit_outline, draw_glass, draw_neon, draw_shadow
 from .theme import qcolor, rad
 
-SEARCH_W, NEW_W, UNDO_W, GAP, H, M = 520, 150, 96, 10, 46, 10
+SEARCH_W, NEW_W, AUTO_W, UNDO_W, GAP, H, M = 520, 150, 104, 96, 10, 46, 10
 
 
 class _Bar(DesktopLayerWindow):
@@ -155,18 +155,21 @@ class ActionBar(_Bar):
 
     def __init__(self, controller):
         super().__init__(controller)
-        self.setFixedSize(NEW_W + UNDO_W + GAP + 2 * M, H + 2 * M)
+        self.setFixedSize(NEW_W + AUTO_W + UNDO_W + 2 * GAP + 2 * M, H + 2 * M)
         self._undo_enabled = False
         self._undo_label = ""
 
     def new_rect(self):
         return QRectF(M, M, NEW_W, H)
 
+    def auto_rect(self):
+        return QRectF(M + NEW_W + GAP, M, AUTO_W, H)
+
     def undo_rect(self):
-        return QRectF(M + NEW_W + GAP, M, UNDO_W, H)
+        return QRectF(M + NEW_W + AUTO_W + 2 * GAP, M, UNDO_W, H)
 
     def boxes(self):
-        return [("new", self.new_rect()), ("undo", self.undo_rect())]
+        return [("new", self.new_rect()), ("auto", self.auto_rect()), ("undo", self.undo_rect())]
 
     def update_undo(self, enabled, label):
         self._undo_enabled = enabled
@@ -180,17 +183,21 @@ class ActionBar(_Bar):
         p.setFont(bf)
         p.setPen(qcolor("button_text"))
         p.drawText(self.new_rect(), Qt.AlignCenter, "+  New Group")
+        p.drawText(self.auto_rect(), Qt.AlignCenter, "\u2728  Auto")
         p.setPen(qcolor("button_text") if self._undo_enabled else qcolor("disabled_text"))
         p.drawText(self.undo_rect(), Qt.AlignCenter, "\u21B6  Undo")
 
     def on_hover(self, h):
         self.setCursor(Qt.PointingHandCursor if h else Qt.ArrowCursor)
         tips = {"undo": (f"Undo: {self._undo_label}" if self._undo_enabled else "Nothing to undo"),
-                "new": "Make a new empty group"}
+                "new": "Make a new empty group",
+                "auto": "Automatically do it: suggest groups for your desktop (nothing changes until you click Apply)"}
         self.setToolTip(tips.get(h, ""))
 
     def on_click(self, key):
         if key == "new":
             self.c.create_group()
+        elif key == "auto":
+            self.c.auto_organize()
         elif key == "undo" and self._undo_enabled:
             self.c.undo()

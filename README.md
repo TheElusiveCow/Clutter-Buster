@@ -1,4 +1,4 @@
-# Clutter Buster (stage 3)
+# Clutter Buster (stage 4)
 
 iOS-style groups for your Windows desktop. Drag shortcuts, files, folders or website
 links onto a frosted-glass group; desktop items vanish from the normal desktop
@@ -14,25 +14,30 @@ hid yourself. Website links dragged from a browser aren't files, so nothing is h
 
 > If your PC shows hidden items, grouped items stay on the desktop but look faded. That's normal.
 > Items on the shared **Public** desktop (e.g. Steam, EA, Epic installed "for all users")
-> need permission to hide. Brian's three were given that permission once, so they hide too;
-> if a new one can't be hidden it stays visible (and in its group) - run `--rehide` after fixing it.
+> need permission to hide. Brian's three (Steam, EA, Epic Games Launcher) were given that
+> permission once (a Windows "Modify" grant for Brian's account on just those three shortcuts).
+> That permission stays in place - it's harmless and Clutter Buster doesn't need it removed.
+> If a new Public-desktop item can't be hidden it stays visible (and in its group) - run `--rehide` after fixing it.
 
 ## Start / stop it
 Open a terminal in this folder:
 
 ```
-.venv\Scripts\pythonw.exe main.py          start (no black console window)
-.venv\Scripts\python.exe  main.py --quit   quit nicely (shows everything on the desktop again)
-.venv\Scripts\python.exe  main.py --rehide try again to hide grouped items that could not be hidden
+.venv\Scripts\pythonw.exe main.py             start (no black console window)
+.venv\Scripts\python.exe  main.py --quit      quit nicely (shows everything on the desktop again)
+.venv\Scripts\python.exe  main.py --rehide    try again to hide grouped items that could not be hidden
+.venv\Scripts\pythonw.exe main.py --uninstall remove Clutter Buster (same as Settings > Apps > Uninstall)
 ```
 
-Or use the broom icon by the clock > **Quit**. (Start-with-Windows comes in a later stage.)
+Or use the broom icon by the clock > **Quit**. It **starts with Windows** by itself
+(turn that off in Settings > General).
 
 ## Use it
 - **Ctrl+Space** anywhere opens search on top of everything. Type a few letters
   ("clc" finds Calculator), Up/Down to pick, Enter to open, Esc to close.
   It searches your desktop, your groups, your favorites and saved websites - never the web.
 - **+ New Group** (next to the search bar) makes a group on the left; type its name, press Enter.
+- **✨ Auto** (next to + New Group) = *Automatically do it* - see below.
 - **Drag** desktop shortcuts, files, folders, `.url` files or links from your browser onto a group.
 - **Click a small tile** to open it (a compact popup grows out of the tile).
   Click an item to open it. Click anywhere else or press Esc to close.
@@ -48,7 +53,8 @@ Or use the broom icon by the clock > **Quit**. (Start-with-Windows comes in a la
   Right-click a favorite to remove it. Favorites never hide anything.
 - **Badges**: a group shows a colored number when new items land in it; it clears when you open it.
 - **Undo** button (or Ctrl+Z) undoes any change. Layout backups are automatic.
-- **Broom icon** by the clock: Settings, Edit layout, Undo, Quit, and the red **Remove Clutter Buster**.
+- **Broom icon** by the clock: Settings, Automatically do it, Edit layout, Undo, Quit,
+  and the red **Remove Clutter Buster**.
 
 ### Stage 3
 - **Edit layout** (right-click a group > *Edit layout*, or the broom icon > *Edit layout*):
@@ -67,9 +73,43 @@ Or use the broom icon by the clock > **Quit**. (Start-with-Windows comes in a la
   text colors, frost (blur), glow and corner roundness, watch the live preview, *Save theme*.
   Saved themes appear in the theme list and can be deleted (it asks first).
   ("Frost" makes the glass milkier - it's a painted frost, not a real background blur.)
-- **Settings** (broom icon > *Settings...*): Appearance, Search (Ctrl+Space, read-only for now),
+- **Settings** (broom icon > *Settings...*): General (stage 4), Appearance, Search (Ctrl+Space, read-only for now),
   Dock (auto-hide on/off), Sounds (on/off + volume), About (version + GitHub link), and the red
   *Remove Clutter Buster* button.
+
+### Stage 4
+- **Automatically do it** (the **✨ Auto** button by + New Group, the broom icon menu, or
+  Settings > General): looks at the visible items on your desktop (yours and the Public one)
+  and suggests groups by name, file type and where a shortcut points - **Games** (Steam, EA,
+  Epic, anything inside a games/steamapps folder), **AI** (LM Studio, ComfyUI, Ollama, Cursor...),
+  **Browsers**, **Chat & Social**, **Tools**, **Media**, **Documents**, **Folders**, **Websites**,
+  **Apps** (everything else that's a program) and *Other files* (off unless you tick it).
+  It reuses groups you already have when they fit (e.g. your "AI" group).
+  A glass review window shows every suggestion: untick a group to skip it, untick an item to
+  leave it on the desktop, rename new groups, or use *Move to...* to put an item in another group.
+  **Nothing changes until you click Apply**, and Apply is **one Undo step**. Items you hid
+  yourself and items already in a group are left alone. It never sorts by itself later.
+- **Start with Windows**: on by default; Settings > General has the switch. It's a normal
+  per-user "Run" entry (no admin), so it also shows in Task Manager > Startup apps.
+- **Settings > Apps**: Clutter Buster now appears in Windows Settings > Apps > Installed apps
+  (with the broom icon, publisher Brian, version 0.4.0) and can be uninstalled from there.
+
+## Uninstall / remove
+Any of these does the same thing:
+- Windows **Settings > Apps > Installed apps > Clutter Buster > ... > Uninstall**
+- the red **Remove Clutter Buster** button (broom icon menu, or Settings)
+- `.venv\Scripts\pythonw.exe main.py --uninstall`
+
+You get **one** confirmation. Then it: shows every grouped item on your desktop again
+(only what it hid itself - it stops if anything can't be shown), turns off Start with Windows,
+removes the Settings > Apps entry, deletes `%APPDATA%\ClutterBuster`, and closes.
+Your desktop files are never deleted or moved.
+
+The confirmation has an **unticked** box *Also delete the program folder
+(C:\Users\Brian\CodeProjects\clutter-buster)*. Only if you tick it, a tiny one-off script in
+`%TEMP%` waits for the app to close and then deletes that folder (it double-checks it's really
+Clutter Buster's folder first, then deletes itself). Leave it unticked to keep the code and the
+Git history. The Public-desktop permission given to Steam/EA/Epic is left as it is (harmless).
 
 ## Open it in Cursor
 In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects\clutter-buster`.
@@ -84,7 +124,11 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/quicksearch.py` | The Ctrl+Space search window. |
 | `clutterbuster/fuzzy.py` | The forgiving search matching. |
 | `clutterbuster/hotkey.py` | Registers Ctrl+Space with Windows. |
-| `clutterbuster/searchbar.py` | The search bar, and the + New Group / Undo buttons. |
+| `clutterbuster/searchbar.py` | The search bar, and the + New Group / Auto / Undo buttons. |
+| `clutterbuster/organize.py` | *Automatically do it*: reads names, file types and shortcut targets and suggests groups (read-only). |
+| `clutterbuster/organize_dialog.py` | The glass review window for those suggestions (Apply / Cancel). |
+| `clutterbuster/integration.py` | Start with Windows and the Settings > Apps entry (per-user registry, no admin). |
+| `clutterbuster/removal.py` | Remove / uninstall: the confirmation, restoring the desktop, the optional folder cleanup. |
 | `clutterbuster/edit_toolbar.py` | The floating Edit layout toolbar (sliders + Done). |
 | `clutterbuster/settings.py` | The glass Settings window. |
 | `clutterbuster/theme_maker.py` | The custom theme maker with its live preview. |
@@ -99,15 +143,17 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/theme.py` | All colors and sizes: Clean White, Neon Gamer, custom themes, Auto light/dark. |
 | `clutterbuster/icons.py` | Real Windows icons, a globe for websites, friendly names. |
 | `clutterbuster/sounds.py` | Makes and plays the soft open/close sounds. |
-| `clutterbuster/showcase.py` | The safe demo used for screenshots (pretend groups, temp settings). |
+| `clutterbuster/showcase.py` | The safe demo used for screenshots (pretend groups, a pretend desktop in %TEMP%, temp settings). |
 | `clutterbuster/blur.py` | Windows blur helper (kept for later themes). |
 | `tests/smoke_test.py` | Automated safety checks using a pretend desktop (developer use). |
 | `tools/screenshot.py` | Saves a screenshot of the main screen (developer use). |
+| `tools/suggest_preview.py` | Prints what *Automatically do it* would suggest, without changing anything (developer use). |
 
 ## Where your settings live
 `%APPDATA%\ClutterBuster`: `layout.json` (groups, favorites, layout, theme choice, custom themes), `ledger.json` (what was hidden),
-`backups\` (last 20 copies), `error.log` (should stay empty), `app.log`, `app.pid`, `status.json`.
+`backups\` (last 20 copies), `error.log` (should stay empty), `app.log`, `app.pid`, `status.json`, `broom.ico`.
+In the registry (your user only): `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value
+`ClutterBuster`, and the key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClutterBuster`.
 
 ## Coming later
-Start with Windows, changing the search shortcut, "Automatically do it" suggestions, and a
-Windows Settings > Apps uninstall entry.
+Changing the search shortcut.

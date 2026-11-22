@@ -1,4 +1,4 @@
-"""Automated check of the safety logic and stage 2 + 3 features, run off-screen with a FAKE desktop.
+"""Automated check of the safety logic and stage 2 + 3 + 4 features, run off-screen with a FAKE desktop.
 
 It never touches real files: it builds a temporary pretend desktop and a
 temporary app-data folder, and (on non-Windows) the Hidden flag is simulated.
@@ -264,6 +264,202 @@ assert not any(df.is_hidden(os.path.join(desk, n)) for n in os.listdir(desk) if 
 assert df.is_hidden(mine)
 assert sorted(os.listdir(desk)) == sorted(before + [f"doc{i}.txt" for i in range(12)]), "no file moved/renamed/deleted"
 assert 0 < len(os.listdir(paths.backups_dir())) <= 20
+
+# ================= stage 4 =================
+import struct  # noqa: E402
+import subprocess  # noqa: E402
+import time  # noqa: E402
+from clutterbuster import integration, organize, removal  # noqa: E402
+c.sync_hidden()
+# --- Start with Windows (on by default) + the Settings > Apps entry (pretend registry on test boxes)
+c.setup_windows_integration()
+assert c.layout.prefs["autostart"] is True and integration.autostart_enabled()
+run_cmd = integration.FAKE[integration.RUN_KEY]["ClutterBuster"]
+assert run_cmd.endswith('main.py"') and "--uninstall" not in run_cmd, run_cmd
+u = integration.FAKE[integration.UNINSTALL_KEY]
+assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.4.0"
+assert u["UninstallString"].endswith('main.py" --uninstall') and u["NoModify"] == 1 and os.path.exists(u["DisplayIcon"])
+c.set_autostart(False)
+assert not integration.autostart_enabled() and c.layout.prefs["autostart"] is False
+c.setup_windows_integration()
+assert not integration.autostart_enabled(), "turning it off sticks across restarts"
+c.set_autostart(True)
+assert integration.autostart_enabled()
+
+
+# --- reading where a shortcut points (hand-built .lnk with a LinkInfo block)
+def make_lnk(path, target):
+    base = target.encode("latin-1") + b"\0"
+    li_header = 0x1C
+    linkinfo = struct.pack("<7I", li_header + len(base) + 1, li_header, 1, 0, li_header, 0,
+                           li_header + len(base)) + base + b"\0"
+    header = bytearray(0x4C)
+    header[0:4] = b"\x4c\x00\x00\x00"
+    header[0x14:0x18] = struct.pack("<I", 0x02)
+    with open(path, "wb") as fh:
+        fh.write(bytes(header) + linkinfo + b"\0\0\0\0")
+    return path
+
+
+racer = make_lnk(os.path.join(desk, "Space Racer.lnk"), r"D:\SteamLibrary\steamapps\common\Racer\racer.exe")
+assert organize.lnk_target(racer).endswith("racer.exe"), organize.lnk_target(racer)
+assert organize.lnk_target(chrome) == ""          # empty / not a shortcut -> just ''
+# --- classifying by name / type / target
+for nm, want in [("Steam.lnk", "games"), ("EA.lnk", "games"), ("Epic Games Launcher.lnk", "games"),
+                 ("LM Studio.lnk", "ai"), ("ComfyUI.lnk", "ai"), ("Ollama.lnk", "ai"),
+                 ("Google Chrome.lnk", "browsers"), ("Brave.lnk", "browsers"), ("Discord.lnk", "chat"),
+                 ("Notepad++.lnk", "tools"), ("MSI Afterburner.lnk", "tools"), ("Spotify.lnk", "media"),
+                 ("Real Thing.lnk", "apps"), ("Beam.lnk", "apps")]:
+    got = organize.classify(os.path.join(tmp, nm))
+    assert got == want, (nm, got, want)
+for nm, body, want in [("Fortnite.url", "URL=com.epicgames.launcher://apps/Fortnite?action=launch", "games"),
+                       ("Call of Duty.url", "URL=steam://rungameid/1938090", "games"),
+                       ("GitHub.url", "URL=https://github.com/", "websites"),
+                       ("Odd.url", "URL=foo://bar\nIconFile=C:\\Program Files (x86)\\Steam\\steam\\games\\x.ico", "games")]:
+    pth = os.path.join(tmp, nm)
+    with open(pth, "w") as fh:
+        fh.write("[InternetShortcut]\n" + body + "\n")
+    assert organize.classify(pth) == want, (nm, organize.classify(pth))
+gurl = os.path.join(desk, "Fortnite.url")
+with open(gurl, "w") as fh:
+    fh.write("[InternetShortcut]\nURL=com.epicgames.launcher://apps/Fortnite?action=launch\n")
+lm = mk(desk, "LM Studio.lnk")
+edge = mk(desk, "Microsoft Edge.lnk")
+disc = mk(desk, "Discord.lnk")
+pdf = mk(desk, "report.pdf")
+jpg = mk(desk, "photo.jpg")
+music = mk(desk, "Music", folder=True)
+odd = mk(desk, "thing.xyz")
+pub_game = mk(pub, "Epic Games Launcher.lnk")
+ai_gid = c.create_group("AI", edit=False)
+assert organize.classify(racer) == "games" and organize.classify(music) == "folders"
+undo_len = len(c.undo_stack._items)
+snap = json.dumps(c.layout.snapshot(), sort_keys=True)
+all_items = df.list_desktop_items()
+hidden_state = {p: df.is_hidden(p) for p in all_items}
+listing = sorted(os.listdir(desk)), sorted(os.listdir(pub))
+plan = organize.suggest(c.layout)
+by = {s["key"]: s for s in plan}
+paths_in = {s["key"]: [i["path"] for i in s["items"]] for s in plan}
+assert by["ai"]["gid"] == ai_gid and lm in paths_in["ai"], "reuses the existing AI group"
+assert racer in paths_in["games"] and pub_game in paths_in["games"] and gurl in paths_in["games"]
+assert edge in paths_in["browsers"] and disc in paths_in["chat"]
+assert pdf in paths_in["documents"] and jpg in paths_in["media"] and music in paths_in["folders"]
+assert odd in paths_in["other"] and not by["other"]["enabled"], "odd files are suggested but off"
+flat = [p for v in paths_in.values() for p in v]
+assert mine not in flat, "items you hid yourself are left alone"
+assert not any(c.layout.group_of(p) for p in flat), "items already in a group are skipped"
+# --- Cancel: nothing changes at all
+dlg = c.auto_organize()
+assert dlg.isVisible() and c.organize_win is dlg
+dlg.grab().save(os.path.join(tmp, "auto-organize.png"))
+dlg.close()
+assert c.organize_win is None
+assert json.dumps(c.layout.snapshot(), sort_keys=True) == snap and len(c.undo_stack._items) == undo_len
+assert {p: df.is_hidden(p) for p in all_items} == hidden_state, "nothing hidden before Apply"
+# --- review: move Discord into AI, rename Browsers to Web, skip Media, untick the PDF, then Apply
+dlg = c.auto_organize()
+keys = [s["key"] for s in dlg.plan]
+i_chat, i_ai = keys.index("chat"), keys.index("ai")
+dlg.move_item(i_chat, [i["path"] for i in dlg.plan[i_chat]["items"]].index(disc), i_ai)
+keys = [s["key"] for s in dlg.plan]
+assert "chat" not in keys, "an emptied suggestion disappears"
+dlg.name_edits[keys.index("browsers")].setText("Web")
+dlg._remember_names()
+dlg.plan[keys.index("media")]["enabled"] = False
+for it in dlg.plan[keys.index("documents")]["items"]:
+    if it["path"] == pdf:
+        it["on"] = False
+dlg.build()
+assert dlg.apply_btn.isEnabled()
+dlg.apply()
+assert len(c.undo_stack._items) == undo_len + 1 and c.undo_stack.next_label() == "automatically do it"
+ai_items = [i["path"] for i in c.layout.group(ai_gid)["items"]]
+assert lm in ai_items and disc in ai_items
+web_g = [g for g in c.layout.groups if g["name"] == "Web"]
+assert web_g and edge in [i["path"] for i in web_g[0]["items"]]
+assert c.layout.group_of(jpg) is None and c.layout.group_of(pdf) is None and c.layout.group_of(odd) is None
+for p in (lm, disc, edge, racer, music, pub_game):
+    assert c.layout.group_of(p) is not None and df.is_hidden(p) and c.ledger.has(p), p
+assert not df.is_hidden(jpg) and not df.is_hidden(pdf) and not df.is_hidden(odd)
+assert (sorted(os.listdir(desk)), sorted(os.listdir(pub))) == listing, "Apply never moves/renames/deletes"
+# --- ONE Undo puts it all back
+c.undo()
+assert json.dumps(c.layout.snapshot(), sort_keys=True) == snap
+assert {p: df.is_hidden(p) for p in all_items} == hidden_state
+assert not any(c.ledger.has(p) for p in (lm, disc, edge, racer, music, pub_game))
+# --- the Remove confirmation: 'also delete the program folder' starts unticked; Cancel = nothing
+from PySide6.QtCore import QTimer  # noqa: E402
+seen = {}
+
+
+def _peek():
+    box = QApplication.activeModalWidget()
+    seen["checked"] = box.checkBox().isChecked()
+    seen["text"] = box.checkBox().text()
+    for b in box.buttons():
+        if b.text() == "Cancel":
+            b.click()
+
+
+QTimer.singleShot(300, _peek)
+go, delf = removal.confirm()
+assert seen["checked"] is False and "Also delete the program folder" in seen["text"], seen
+assert go is False and delf is False
+assert os.path.isdir(paths.app_dir()) and integration.uninstall_registered()
+# --- program-folder cleanup: only ever on temp dirs here, never the real install
+not_prog = os.path.join(tmp, "NotTheProgram")
+os.makedirs(not_prog)
+open(os.path.join(not_prog, "main.py"), "w").close()
+assert not removal.looks_like_program_folder(not_prog)
+assert not removal.schedule_folder_cleanup(not_prog, os.getpid(), temp_dir=tmp)
+assert not removal.looks_like_program_folder(desk) and not removal.looks_like_program_folder(os.path.expanduser("~"))
+
+
+def fake_program(name):
+    d = os.path.join(tmp, name)
+    os.makedirs(os.path.join(d, "clutterbuster"))
+    os.makedirs(os.path.join(d, ".venv", "Scripts"))
+    for rel in ("main.py", "clutterbuster/__init__.py", "clutterbuster/ledger.py", ".venv/Scripts/x"):
+        open(os.path.join(d, rel), "w").close()
+    return d
+
+
+def wait_gone(p, secs=12):
+    end = time.time() + secs
+    while time.time() < end and os.path.exists(p):
+        time.sleep(0.2)
+    return not os.path.exists(p)
+
+
+prog1 = fake_program("FakeProgram1")
+sleeper = subprocess.Popen(["sleep", "1.5"])
+assert removal.schedule_folder_cleanup(prog1, sleeper.pid, temp_dir=tmp)
+time.sleep(0.6)
+assert os.path.isdir(prog1), "waits until the app has closed"
+sleeper.wait()
+assert wait_gone(prog1), "folder removed after the app closed"
+assert not [f for f in os.listdir(tmp) if f.startswith("clutterbuster-cleanup")], "cleanup script removes itself"
+assert os.path.isfile(os.path.join(ROOT, "main.py")), "the real code folder is untouched"
+assert os.path.isdir(not_prog)
 err = paths.error_log()
 assert not os.path.exists(err) or os.path.getsize(err) == 0, open(err).read()
+# --- full Remove (with 'also delete the program folder' ticked) on a FAKE program folder
+prog2 = fake_program("FakeProgram2")
+os.environ["CLUTTERBUSTER_PROGRAM_DIR"] = prog2
+assert integration.program_dir() == prog2
+sleeper2 = subprocess.Popen(["sleep", "1"])
+c.sync_hidden()
+assert any(df.is_hidden(p) for p in all_items if p != mine)
+assert c.remove_everything(delete_folder=True, wait_pid=sleeper2.pid)
+assert c.removed and not os.path.exists(paths.app_dir()), "app settings folder deleted"
+assert not integration.autostart_enabled() and not integration.uninstall_registered()
+assert integration.UNINSTALL_KEY not in integration.FAKE
+assert not any(df.is_hidden(os.path.join(desk, n)) for n in os.listdir(desk) if n != "secret.txt")
+assert not any(df.is_hidden(os.path.join(pub, n)) for n in os.listdir(pub))
+assert df.is_hidden(mine), "your own hidden file stays hidden"
+assert (sorted(os.listdir(desk)), sorted(os.listdir(pub))) == listing, "no desktop file touched"
+sleeper2.wait()
+assert wait_gone(prog2)
+assert os.path.isfile(os.path.join(ROOT, "main.py")), "the real code folder is untouched"
 print("ALL CHECKS PASSED; images in", tmp)

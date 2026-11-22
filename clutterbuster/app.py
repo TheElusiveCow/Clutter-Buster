@@ -2,7 +2,6 @@
 import datetime
 import logging
 import os
-import shutil
 import sys
 import time
 
@@ -11,7 +10,7 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import __version__, desktop_files as df, desktop_layer, icons, paths, sounds, theme
+from . import __version__, desktop_files as df, desktop_layer, icons, integration, organize, paths, removal, sounds, theme
 from .dock import Dock
 from .glass import ask
 from .group_widget import GroupWidget, first_free_left, group_size, min_size, snap_rect
@@ -60,6 +59,7 @@ class Controller:
         self._covered = False
         self._last_light = theme.windows_prefers_light()
         self.settings_win = None
+        self.organize_win = None
         self.toolbar = None
         self.theme_name = ""
         prefs = self.layout.prefs
@@ -121,6 +121,10 @@ class Controller:
         self.esc_shortcut.activated.connect(self._on_escape)
         self.apply_dock_mode()
         self.update_glow_timer()
+
+        # Stage 4: Start with Windows (on unless you turned it off) + the Settings > Apps entry
+        if not showcase:
+            self.setup_windows_integration()
 
         app.aboutToQuit.connect(self.on_about_to_quit)
         app.commitDataRequest.connect(lambda *_: self.restore_desktop())
@@ -428,6 +432,10 @@ class Controller:
                 "glow_animating": self.glow_timer.isActive(),
                 "edit_mode": self.edit_mode,
                 "custom_themes": [t.get("name") for t in self.layout.custom_themes],
+                "start_with_windows": integration.autostart_enabled(),
+                "start_with_windows_command": integration._get(integration.RUN_KEY, integration.RUN_NAME),
+                "in_settings_apps": integration.uninstall_registered(),
+                "uninstall_command": integration._get(integration.UNINSTALL_KEY, "UninstallString"),
             }
             paths.atomic_write_json(paths.status_file(), status)
         except Exception:
@@ -877,6 +885,90 @@ class Controller:
         out.sort(key=lambda e: e[0].lower())
         return out
 
+    # ------------------------------------------------------------------ Windows integration (stage 4)
+    def setup_windows_integration(self):
+        prefs = self.layout.prefs
+        if "autostart" not in prefs:          # first run of stage 4: on by default
+            prefs["autostart"] = True
+            self.layout.save()
+        integration.set_autostart(bool(prefs["autostart"]))   # also refreshes the path if the folder moved
+        icon = paths.path("broom.ico")
+        try:
+            if not os.path.exists(icon):
+                broom_icon().pixmap(64, 64).save(icon, "ICO")
+        except Exception:
+            log.exception("Could not save broom.ico")
+        integration.register_uninstall(__version__, icon)
+
+    def set_autostart(self, on):
+        self.layout.prefs["autostart"] = bool(on)
+        self.layout.save()
+        ok = integration.set_autostart(bool(on))
+        log.info("Start with Windows: %s%s", "on" if on else "off", "" if ok else " (registry write failed)")
+        if self.settings_win is not None:
+            self.settings_win.refresh_autostart()
+
+    # ------------------------------------------------------------------ automatically do it (stage 4)
+    def auto_organize(self):
+        """Open the review window with suggestions. Nothing changes until Apply."""
+        from .organize_dialog import OrganizeDialog
+        if self.edit_mode:
+            self.exit_edit_mode()
+        if self.organize_win is not None:
+            self.organize_win.close()
+        plan = organize.suggest(self.layout)
+        log.info("Automatically do it: %d suggested group(s), %d item(s)",
+                 len(plan), sum(len(s["items"]) for s in plan))
+        self.organize_win = OrganizeDialog(self, plan)
+        av = self.avail()
+        w = self.organize_win
+        w.move(av.center().x() - w.width() // 2, max(av.top(), av.center().y() - w.height() // 2))
+        w.show_on_top()
+        return w
+
+    def apply_organize(self, plan):
+        """Do what the review window says - as ONE undo step. Returns how many items were grouped."""
+        chosen = []
+        for s in plan:
+            if not s.get("enabled"):
+                continue
+            ps = [it["path"] for it in s.get("items", []) if it.get("on")]
+            if ps:
+                chosen.append((s, ps))
+        if not chosen:
+            return 0
+        self.checkpoint("automatically do it")
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        total, failed, made = 0, [], []
+        for s, ps in chosen:
+            g = self.layout.group(s["gid"]) if s.get("gid") else None
+            if g is None:
+                w, h = group_size({"mode": "tile"})
+                pos = first_free_left(self.avail(), self.group_rects(), w, h)
+                g = new_group((s.get("name") or "New Group")[:60], pos.x(), pos.y(),
+                              accent=s.get("accent"), mode="tile")
+                self.layout.groups.append(g)
+                made.append(g["name"])
+            added = []
+            for p in ps:
+                if not os.path.exists(p) or self.layout.group_of(p) is not None:
+                    continue
+                g["items"].append({"path": p, "added": now})
+                added.append(p)
+            g["badge"] = int(g.get("badge") or 0) + len(added)
+            for p in added:
+                if self.hider.hide(p, g["id"]) == "failed":   # ledger is written before hiding
+                    failed.append(icons.display_name(p))
+            total += len(added)
+        self.sync_hidden()
+        self.commit()
+        log.info("Automatically do it: grouped %d item(s); new groups: %s", total, ", ".join(made) or "none")
+        msg = f"Grouped {total} item{'s' if total != 1 else ''}. Click Undo to put it all back."
+        if failed:
+            msg += "\n" + ", ".join(failed) + " couldn't be hidden, so they're in a group and also stay on the desktop."
+        self.notify(msg)
+        return total
+
     # ------------------------------------------------------------------ undo
     def undo(self):
         if self.edit_mode:
@@ -938,6 +1030,8 @@ class Controller:
                 QTimer.singleShot(0, self.open_quick_search)
             elif cmd == "rehide":
                 QTimer.singleShot(0, self.rehide)
+            elif cmd == "uninstall":
+                QTimer.singleShot(0, self.request_remove)
 
     def rehide(self):
         """Try again to hide grouped items that could not be hidden before
@@ -972,47 +1066,37 @@ class Controller:
         self.tray.hide()
 
     def request_remove(self):
-        if not ask("Remove Clutter Buster?",
-                   "This will:\n\n"
-                   "\u2022 show every grouped item on your desktop again\n"
-                   "\u2022 turn off start-with-Windows\n"
-                   "\u2022 delete Clutter Buster's settings and groups\n"
-                   "\u2022 close the app\n\n"
-                   "None of your files, shortcuts or folders are deleted or moved.",
-                   yes_text="Remove Clutter Buster", danger=True):
-            return
-        self.remove_everything()
+        """The one confirmation (with the unticked 'also delete the program folder' box)."""
+        if self.edit_mode:
+            self.exit_edit_mode()
+        go, delete_folder = removal.confirm()
+        if go:
+            self.remove_everything(delete_folder)
 
-    def remove_everything(self):
-        self.restore_desktop()
-        if self.ledger.hidden:
-            QMessageBox.warning(None, "Clutter Buster",
-                                "Some items could not be shown again, so I stopped before deleting anything.\n"
-                                "Details are in " + paths.error_log())
-            return
-        remove_startup_entry()
+    def remove_everything(self, delete_folder=False, wait_pid=None):
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+        ok, msg = removal.remove_all(self.hider, delete_folder, wait_pid)
+        if not ok:
+            QMessageBox.warning(None, "Clutter Buster", msg)
+            return False
         self.removed = True
-        log.info("Remove Clutter Buster: desktop restored, deleting app data")
-        paths.close_logging()
-        shutil.rmtree(paths.app_dir(), ignore_errors=True)
         self.tray.hide()
         self.app.quit()
+        return True
 
 
-def remove_startup_entry():
-    """Turn off start-with-Windows (not added until a later stage, but be thorough)."""
-    if sys.platform != "win32":
-        return
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run",
-                            0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as k:
-            try:
-                winreg.DeleteValue(k, "ClutterBuster")
-            except FileNotFoundError:
-                pass
-    except OSError:
-        pass
+def standalone_uninstall(app):
+    """main.py --uninstall when the app isn't running (e.g. from Settings > Apps)."""
+    go, delete_folder = removal.confirm()
+    if not go:
+        return 1
+    hider = Hider(Ledger())
+    ok, msg = removal.remove_all(hider, delete_folder)
+    if not ok:
+        QMessageBox.warning(None, "Clutter Buster", msg)
+        return 2
+    return 0
 
 
 def send_command(cmd, showcase=False, wait_ms=1500):
@@ -1054,6 +1138,12 @@ def run(argv):
         ok = send_command("rehide")
         log.info("--rehide: %s", "sent" if ok else "Clutter Buster was not running")
         return 0 if ok else 3
+    if "--uninstall" in argv:
+        # from Windows Settings > Apps (or by hand): let the running copy handle it, else do it here
+        if send_command("uninstall"):
+            log.info("--uninstall: handed to the running copy")
+            return 0
+        return standalone_uninstall(app)
     if send_command("search", wait_ms=300):
         log.info("Second copy started; Clutter Buster is already running, so this one exits.")
         return 0

@@ -41,6 +41,7 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("Clutter Buster")
         m = QMenu()
         m.addAction("Settings...", self.c.show_settings)
+        m.addAction("Automatically do it...", self.c.auto_organize)
         m.addAction("Edit layout", self.c.edit_layout)
         self.undo_action = m.addAction("Undo", self.c.undo)
         m.addSeparator()

@@ -1,5 +1,6 @@
 """The Settings window (tray > Settings...): a glass window with sections
 
+  General     - Start with Windows, "Automatically do it", how to uninstall
   Appearance  - theme (Auto / Clean White / Neon Gamer / your own), theme maker, the 4 sliders
   Search      - the quick search shortcut (Ctrl+Space, read-only for now)
   Dock        - auto-hide on/off
@@ -11,12 +12,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
                                QStackedWidget, QVBoxLayout, QWidget)
 
-from . import __version__, paths, sounds
+from . import __version__, integration, paths, sounds
 from .glasswin import GlassPanel, SliderRow
 from .theme import AUTO, BUILT_IN, DEFAULT_UI, SLIDERS
 
 GITHUB = "https://github.com/TheElusiveCow/Clutter-Buster"
-SECTIONS = ["Appearance", "Search", "Dock", "Sounds", "About"]
+SECTIONS = ["General", "Appearance", "Search", "Dock", "Sounds", "About"]
 
 
 def _h(text, kind="h2"):
@@ -64,6 +65,7 @@ class SettingsWindow(GlassPanel):
         # right: pages
         self.pages = QStackedWidget()
         outer.addWidget(self.pages, 1)
+        self.pages.addWidget(self._general())
         self.pages.addWidget(self._appearance())
         self.pages.addWidget(self._search())
         self.pages.addWidget(self._dock())
@@ -80,6 +82,43 @@ class SettingsWindow(GlassPanel):
         lay.setSpacing(10)
         lay.addWidget(_h(title, "h1"))
         return w, lay
+
+    def _general(self):
+        w, lay = self._page("General")
+        lay.addWidget(_h("Start up"))
+        self.autostart = QCheckBox("Start Clutter Buster when Windows starts")
+        self.autostart.setCursor(Qt.PointingHandCursor)
+        self.autostart.setChecked(integration.autostart_enabled())
+        self.autostart.toggled.connect(lambda v: self.c.set_autostart(bool(v)))
+        lay.addWidget(self.autostart)
+        lay.addWidget(_hint("Your groups appear by themselves after you sign in. Turn this off and "
+                            "you start the app yourself (it then won't run until you do)."))
+        lay.addSpacing(8)
+        lay.addWidget(_h("Tidy up"))
+        row = QHBoxLayout()
+        auto = QPushButton("\u2728  Automatically do it...")
+        auto.setObjectName("primary")
+        auto.setCursor(Qt.PointingHandCursor)
+        auto.clicked.connect(self.c.auto_organize)
+        row.addWidget(auto)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addWidget(_hint("Looks at what's on your desktop and suggests groups - Games, AI, Browsers, "
+                            "Tools, Documents and so on, reusing groups you already have. You check "
+                            "everything first: nothing changes until you click Apply, and one Undo puts it "
+                            "all back. It only runs when you click it."))
+        lay.addSpacing(8)
+        lay.addWidget(_h("Uninstall"))
+        lay.addWidget(_hint("Use the red button on the left, or Windows Settings > Apps > Installed apps > "
+                            "Clutter Buster > Uninstall. Either way every grouped item is shown on your "
+                            "desktop again first."))
+        lay.addStretch(1)
+        return w
+
+    def refresh_autostart(self):
+        self.autostart.blockSignals(True)
+        self.autostart.setChecked(integration.autostart_enabled())
+        self.autostart.blockSignals(False)
 
     def _appearance(self):
         w, lay = self._page("Appearance")
