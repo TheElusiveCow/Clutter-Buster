@@ -1323,7 +1323,7 @@ class Controller:
         ids = [x["id"] for x in g["tabs"]]
         i = ids.index(tid)
         m = QMenu()
-        m.addAction("Rename...", lambda: widget.start_tab_rename(tid))
+        m.addAction("Rename tab", lambda: widget.start_tab_rename(tid))
         left = m.addAction("Move left", lambda: self.move_tab(gid, tid, -1))
         left.setEnabled(i > 0)
         right = m.addAction("Move right", lambda: self.move_tab(gid, tid, 1))
@@ -1345,10 +1345,8 @@ class Controller:
             return
         if g.get("mode") == "panel":
             self._new_tab_and_rename(gid, widget)
-        else:                       # small tile: tabs live in its popup
-            if not (self.popup.isVisible() and self.popup.gid == gid):
-                self.open_group(gid)
-            self._new_tab_and_rename(gid, self.popup)
+        else:                       # small tile: rename right on the fence (no pop-out)
+            self._new_tab_and_rename(gid, self.widgets.get(gid))
 
     def _new_tab_and_rename(self, gid, widget):
         tid = self.add_tab(gid)
@@ -1620,7 +1618,6 @@ class Controller:
         if g is None:
             return
         m = QMenu()
-        m.addAction("Open", lambda: self.open_group(gid))
         m.addAction("\u270E  Rename", widget.start_rename)          # the same in-place box as the pencil
         if self.permfix_candidates(gid):
             m.addAction("\u26A0  Fix hiding permission...", lambda: self.fix_permissions(gid=gid))

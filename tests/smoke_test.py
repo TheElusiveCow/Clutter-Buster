@@ -1417,6 +1417,22 @@ assert (sorted(os.listdir(desk)), sorted(os.listdir(pub))) == listing, "no deskt
 sleeper2.wait()
 assert wait_gone(prog2)
 assert os.path.isfile(os.path.join(ROOT, "main.py")), "the real code folder is untouched"
+# rename tabs in place (Main too); clicking a fence never opens the pop-out
+_rg = c.create_group("TabRename", edit=False, items=[])
+c.add_tab(_rg)
+_g = c.layout.group(_rg)
+_main = _g["tabs"][0]["id"]
+c.widgets[_rg].start_tab_rename(_main)
+assert c.widgets[_rg].tab_editor is not None and c.widgets[_rg].tab_editor.isVisible(), "inline tab box"
+c.widgets[_rg].tab_editor.setText("Work stuff")
+c.widgets[_rg]._finish_tab_rename()
+assert c.layout.group(_rg)["tabs"][0]["name"] == "Work stuff" and c.layout.group(_rg)["tabs"][0]["id"] == _main
+c.popup.hide()
+_w = c.widgets[_rg]
+QTest.mouseClick(_w, _Qt.LeftButton, _Qt.NoModifier, _w.glass_rect().center().toPoint())
+QTest.mouseDClick(_w, _Qt.LeftButton, _Qt.NoModifier, _w.glass_rect().center().toPoint())
+app.processEvents()
+assert not c.popup.isVisible(), "no pop-out from the fence"
 print("ALL CHECKS PASSED; images in", tmp)
 sys.stdout.flush()
 os._exit(0)      # like the app: skip Python's one-by-one teardown of the Qt windows

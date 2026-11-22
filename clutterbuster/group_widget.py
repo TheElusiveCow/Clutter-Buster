@@ -87,7 +87,7 @@ class GroupWidget(DesktopLayerWindow):
         self._last_tab = None
         self._open_timer = QTimerS(self)
         self._open_timer.setSingleShot(True)
-        self._open_timer.timeout.connect(lambda: self.c.open_group(self.gid))
+        self._open_timer.timeout.connect(lambda: None)      # the fence pop-out is gone
 
     @property
     def group(self):
@@ -837,10 +837,10 @@ class GroupWidget(DesktopLayerWindow):
             elif kind == "tile" and self._press_item is not None:
                 self._selected = self._press_item           # one click selects; double-click opens
                 self._dirty = True
-            elif kind == "tile":
-                self.c.open_group(self.gid)                 # empty space opens a small tile
-            elif kind == "title":
-                self.c.open_group(self.gid)                 # big panel: click the title
+            elif kind in ("tile", "title"):
+                if self._selected is not None:              # empty space just clears the selection
+                    self._selected = None
+                    self._dirty = True
             elif kind.startswith("tab:"):
                 self.c.select_tab(self.gid, kind[4:])
             elif kind == "plus":
@@ -865,6 +865,12 @@ class GroupWidget(DesktopLayerWindow):
         return r.top() <= pos.y() <= r.top() + TITLE_H and r.left() + 24 <= pos.x() <= self.menu_rect().left() - 30
 
     def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            t = self.tab_at(e.position()) if self.mode == "panel" else self.tile_tab_at(e.position())
+            if t and t not in ("+", "more"):
+                self._open_timer.stop()
+                self.start_tab_rename(t)                     # double-click a tab = rename it in place
+                return
         if e.button() == Qt.LeftButton and self.on_name(e.position()) and not self.tab_at(e.position()):
             self._open_timer.stop()
             self.start_rename()                          # Enter saves, Esc cancels (one undo step)
@@ -896,7 +902,7 @@ class GroupWidget(DesktopLayerWindow):
             self.update()
 
     def contextMenuEvent(self, e):
-        t = self.tab_at(QPointF(e.pos()))
+        t = self.tab_at(QPointF(e.pos())) if self.mode == "panel" else self.tile_tab_at(QPointF(e.pos()))
         if t and t != "+":
             self.c.tab_menu(self.gid, t, e.globalPos(), self)
             return
@@ -982,9 +988,9 @@ class GroupWidget(DesktopLayerWindow):
 
     def start_tab_rename(self, tid):
         g = self.group
-        if g is None or self.mode != "panel":
+        if g is None:
             return
-        segs, _t, _p = self.tab_bar()
+        segs = self.tab_bar()[0] if self.mode == "panel" else self.tile_strip()
         rect = dict(segs).get(tid)
         t = next((x for x in g["tabs"] if x["id"] == tid), None)
         if rect is None or t is None:
@@ -999,7 +1005,9 @@ class GroupWidget(DesktopLayerWindow):
             self.tab_editor.installEventFilter(self)
         self._editing_tab = tid
         w = max(90, int(rect.width()) + 20)
-        self.tab_editor.setGeometry(int(rect.center().x() - w / 2), int(rect.top()), w, int(rect.height()))
+        h = max(22, int(rect.height()))
+        x = max(0, min(self.width() - w, int(rect.center().x() - w / 2)))
+        self.tab_editor.setGeometry(x, int(rect.center().y() - h / 2), w, h)
         self.tab_editor.setText(t["name"])
         self.tab_editor.selectAll()
         self.tab_editor.show()
