@@ -1,4 +1,4 @@
-# Clutter Buster (stage 4)
+# Clutter Buster
 
 iOS-style groups for your Windows desktop. Drag shortcuts, files, folders or website
 links onto a frosted-glass group; desktop items vanish from the normal desktop
@@ -44,7 +44,13 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
 - **Right-click a group** > *Accent color* or *Show as > Small tile / Big panel*.
 - **Big panels**: click an item to open it, click the title to open the popup,
   the "..." button for the menu.
-- **Resize** any group by dragging its edges or corners. Icons scale and never get cut off;
+- **Drag an item out**: drag an icon out of an open popup or a big panel and drop it on the bare
+  desktop - it leaves the group and shows on the desktop again (only its Hidden flag is cleared;
+  the file never moves). A see-through ghost icon follows the mouse. Drop it on another group to
+  move it there instead (still hidden). Undo puts it back. Press Esc while dragging to cancel.
+- **Resize** any group by dragging its edges or corners (a 16 px zone along each edge, and a
+  grip with three little lines in the bottom-right corner that shows on hover and in Edit layout).
+  Small tiles stay square and grow from the corner you pull. Icons scale and never get cut off;
   very small groups hide labels until you hover (hovering never opens anything).
 - **Drag an item onto another item** (in a popup or big panel) to make a new group with both.
   Drag an item onto another group to move it there.
@@ -125,6 +131,8 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/fuzzy.py` | The forgiving search matching. |
 | `clutterbuster/hotkey.py` | Registers Ctrl+Space with Windows. |
 | `clutterbuster/searchbar.py` | The search bar, and the + New Group / Auto / Undo buttons. |
+| `clutterbuster/winicons.py` | Real, sharp icons for each item, looked up like Explorer does (shortcut icon locations, .url icon files, 256 px). |
+| `clutterbuster/shortcuts.py` | Reads where .lnk / .url shortcuts point and where their pictures come from (read-only). |
 | `clutterbuster/organize.py` | *Automatically do it*: reads names, file types and shortcut targets and suggests groups (read-only). |
 | `clutterbuster/organize_dialog.py` | The glass review window for those suggestions (Apply / Cancel). |
 | `clutterbuster/integration.py` | Start with Windows and the Settings > Apps entry (per-user registry, no admin). |
@@ -147,6 +155,7 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/blur.py` | Windows blur helper (kept for later themes). |
 | `tests/smoke_test.py` | Automated safety checks using a pretend desktop (developer use). |
 | `tools/screenshot.py` | Saves a screenshot of the main screen (developer use). |
+| `tools/icon_diag.py` | Lists every grouped item with its shortcut target / icon source and old-vs-new icon (read-only, developer use). |
 | `tools/suggest_preview.py` | Prints what *Automatically do it* would suggest, without changing anything (developer use). |
 
 ## Where your settings live

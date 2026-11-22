@@ -17,11 +17,12 @@ from PySide6.QtWidgets import QLineEdit
 
 from . import icons
 from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_edit_outline, draw_glass,
-                    draw_neon, draw_shadow, read_item, start_item_drag)
+                    draw_neon, draw_shadow, read_item)
 from .theme import THEME, accent_color, qcolor, rad
 
 DRAG_THRESHOLD = 6
-EDGE = 7
+EDGE = 16          # resize zone along every edge (logical px - Windows scales it, ~24 px at 150%)
+CORNER = 24        # bottom-right resize grip
 TILE_DEFAULT, TILE_MIN, TILE_MAX = (96, 112), (56, 66), (320, 340)
 PANEL_DEFAULT, PANEL_MIN = (340, 250), (150, 110)
 TITLE_H = 34
@@ -133,7 +134,7 @@ class GroupWidget(DesktopLayerWindow):
         return out
 
     def item_at(self, pos):
-        if self.mode != "panel":
+        if self.mode != "panel" or self.edges_at(pos):
             return None
         for idx, r in self.panel_item_rects():
             if r.adjusted(3, 3, -3, -3).contains(QPointF(pos)):
@@ -141,16 +142,27 @@ class GroupWidget(DesktopLayerWindow):
         return None
 
     def edges_at(self, pos):
-        e = 0
-        if pos.x() < EDGE:
-            e |= 1
-        if pos.x() > self.width() - EDGE:
-            e |= 2
-        if pos.y() < EDGE:
-            e |= 4
-        if pos.y() > self.height() - EDGE:
-            e |= 8
-        return e
+        """Which edges a point is on (1=left 2=right 4=top 8=bottom). The ONE test used for
+        both the mouse cursor and the click, so what you see is what you get."""
+        return edges_for(pos.x(), pos.y(), self.width(), self.height())
+
+    def hit(self, pos):
+        """(kind, edges) for a point: resize beats everything else."""
+        e = self.edges_at(pos)
+        if e:
+            return "resize", e
+        if self.mode == "panel":
+            if self.menu_rect().contains(pos):
+                return "menu", 0
+            if self.item_at(pos) is not None:
+                return "item", 0
+            if self.title_rect().contains(pos):
+                return "title", 0
+            return "move", 0
+        return "tile", 0
+
+    def grip_rect(self):
+        return QRectF(self.width() - CORNER, self.height() - CORNER, CORNER, CORNER)
 
     # ------------------------------------------------------------ painting
     def radius(self):
@@ -183,6 +195,32 @@ class GroupWidget(DesktopLayerWindow):
                 draw_badge(p, QPointF(self.menu_rect().left() - 14, self.menu_rect().center().y()), g["badge"], acc)
         if self.c.edit_mode:
             draw_edit_outline(p, r, self.radius(), acc)
+        if self.c.edit_mode or self._hover or self._active:
+            self.paint_grip(p)
+
+    def paint_grip(self, p):
+        """Three short diagonal lines in the bottom-right corner: 'drag here to resize'."""
+        gr = self.grip_rect()
+        if self.mode == "panel":
+            r = self.glass_rect()
+            x2, y2 = r.right() - 5, r.bottom() - 5
+        else:
+            x2, y2 = gr.right() - 4, gr.bottom() - 4
+        col = qcolor("panel_text" if self.mode == "panel" else "label_text")
+        col.setAlpha(170)
+        p.save()
+        p.setRenderHint(p.RenderHint.Antialiasing)
+        for k, n in enumerate((14, 9, 4)):
+            pen = QPen(qcolor("label_shadow") if self.mode == "tile" else QColor(0, 0, 0, 0), 3.2)
+            pen.setCapStyle(Qt.RoundCap)
+            if self.mode == "tile":
+                p.setPen(pen)
+                p.drawLine(QPointF(x2 - n, y2), QPointF(x2, y2 - n))
+            pen = QPen(col, 1.6)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(x2 - n, y2), QPointF(x2, y2 - n))
+        p.restore()
 
     def _paint_tile(self, p, g):
         r = self.glass_rect()
@@ -325,24 +363,13 @@ class GroupWidget(DesktopLayerWindow):
         self._press = e.globalPosition().toPoint()
         self._press_geom = self.geometry()
         self._active = False
-        self._edges = self.edges_at(pos)
-        self._press_item = None
-        if self._edges:
-            self._press_kind = "resize"
-        elif self.mode == "panel" and self.menu_rect().contains(pos):
-            self._press_kind = "menu"
-        elif self.mode == "panel" and self.item_at(pos) is not None:
-            self._press_kind = "item"
-            self._press_item = self.item_at(pos)
-        elif self.mode == "panel" and self.title_rect().contains(pos):
-            self._press_kind = "title"
-        else:
-            self._press_kind = "move" if self.mode == "panel" else "tile"
+        self._press_kind, self._edges = self.hit(pos)
+        self._press_item = self.item_at(pos) if self._press_kind == "item" else None
 
     def mouseMoveEvent(self, e):
         pos = e.position()
         if self._press is None or not (e.buttons() & Qt.LeftButton):
-            cur = self._cursor_for(self.edges_at(pos))
+            cur = self._cursor_for(self.hit(pos)[1])
             if cur is not None:
                 self.setCursor(cur)
             elif self.c.edit_mode:
@@ -363,7 +390,7 @@ class GroupWidget(DesktopLayerWindow):
                     path = g["items"][self._press_item]["path"]
                     self._press = None
                     self._active = False
-                    start_item_drag(self, path, self.gid, icons.icon_for(path))
+                    self.c.drag_item(self, path, self.gid)
                 return
         if not self._active:
             return
@@ -373,29 +400,7 @@ class GroupWidget(DesktopLayerWindow):
             self.move(self._press_geom.topLeft() + delta)
 
     def _do_resize(self, d):
-        g0 = QRect(self._press_geom)
-        mw, mh = min_size(self.mode)
-        mx = TILE_MAX if self.mode == "tile" else (4000, 4000)
-        e = self._edges
-        if e & 1:
-            g0.setLeft(min(g0.left() + d.x(), g0.right() - mw))
-        if e & 2:
-            g0.setRight(max(g0.right() + d.x(), g0.left() + mw))
-        if e & 4:
-            g0.setTop(min(g0.top() + d.y(), g0.bottom() - mh))
-        if e & 8:
-            g0.setBottom(max(g0.bottom() + d.y(), g0.top() + mh))
-        if g0.width() > mx[0]:
-            if e & 1:
-                g0.setLeft(g0.right() - mx[0])
-            else:
-                g0.setWidth(mx[0])
-        if g0.height() > mx[1]:
-            if e & 4:
-                g0.setTop(g0.bottom() - mx[1])
-            else:
-                g0.setHeight(mx[1])
-        self.setGeometry(g0)
+        self.setGeometry(resize_rect(self._press_geom, d, self._edges, self.mode))
         self.update()
 
     def mouseReleaseEvent(self, e):
@@ -517,6 +522,61 @@ class GroupWidget(DesktopLayerWindow):
             self.update()
             return True
         return super().eventFilter(obj, ev)
+
+
+def edges_for(x, y, w, h):
+    """Resize hit-test shared by hover and press: 16 px along each edge, 24 px grip corner."""
+    if x < 0 or y < 0 or x > w or y > h:
+        return 0
+    if x >= w - CORNER and y >= h - CORNER:
+        return 2 | 8                      # the bottom-right grip
+    e = 0
+    if x < EDGE:
+        e |= 1
+    if x > w - EDGE:
+        e |= 2
+    if y < EDGE:
+        e |= 4
+    if y > h - EDGE:
+        e |= 8
+    return e
+
+
+def resize_rect(g0, d, e, mode):
+    """New window rect while resizing from press-time rect g0 by mouse delta d on edges e.
+    Small tiles stay SQUARE (the glass square + its label): any edge or corner makes the whole
+    tile bigger/smaller, anchored on the opposite side. (Before, dragging one edge of a tile
+    only widened the transparent window and the square slid sideways - it looked like moving.)"""
+    g0 = QRect(g0)
+    if mode == "tile":
+        s0 = min(g0.width() - 20, g0.height() - 36)
+        deltas = []
+        if e & 1:
+            deltas.append(-d.x())
+        if e & 2:
+            deltas.append(d.x())
+        if e & 4:
+            deltas.append(-d.y())
+        if e & 8:
+            deltas.append(d.y())
+        ds = max(deltas, key=abs) if deltas else 0
+        s = int(max(TILE_MIN[0] - 20, min(TILE_MAX[1] - 36, s0 + ds)))
+        w, h = s + 20, s + 36
+        x = g0.right() + 1 - w if e & 1 else g0.left()
+        y = g0.bottom() + 1 - h if e & 4 else g0.top()
+        if not (e & 1) and not (e & 2):            # top/bottom only: keep it centred
+            x = g0.left() + (g0.width() - w) // 2
+        return QRect(x, y, w, h)
+    mw, mh = PANEL_MIN
+    if e & 1:
+        g0.setLeft(min(g0.left() + d.x(), g0.right() - mw))
+    if e & 2:
+        g0.setRight(max(g0.right() + d.x(), g0.left() + mw))
+    if e & 4:
+        g0.setTop(min(g0.top() + d.y(), g0.bottom() - mh))
+    if e & 8:
+        g0.setBottom(max(g0.bottom() + d.y(), g0.top() + mh))
+    return g0
 
 
 def snap_rect(x, y, w, h, avail, others, grid=16):

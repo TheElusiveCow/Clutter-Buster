@@ -1,6 +1,7 @@
 """Real Windows icons for shortcuts, files and folders (cached), a globe for websites,
 and friendly names."""
 import os
+import sys
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QFileInfo, QPointF, QRectF, Qt
@@ -38,21 +39,48 @@ def globe_icon():
     return _globe
 
 
+def _cache_key(p):
+    try:
+        st = os.stat(p)
+        return (os.path.normcase(os.path.abspath(p)), int(st.st_mtime), st.st_size)
+    except OSError:
+        return None
+
+
 def icon_for(p):
+    """The item's real icon, cached per item (not per file type)."""
     global _provider
     if is_url(p):
         return globe_icon()
-    if p in _cache:
-        return _cache[p]
-    if _provider is None:
-        _provider = QFileIconProvider()
-    if not os.path.exists(p):
+    key = _cache_key(p)
+    if key is None:
         return QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning)
-    icon = _provider.icon(QFileInfo(p))
-    if icon.isNull():
+    if key in _cache:
+        return _cache[key]
+    icon = None
+    if sys.platform == "win32":
+        try:
+            from . import winicons
+            icon, _how = winicons.resolve(p)
+        except Exception:
+            icon = None
+    if icon is None:
+        if _provider is None:
+            _provider = QFileIconProvider()
+        icon = _provider.icon(QFileInfo(p))
+    if icon is None or icon.isNull():
         icon = QApplication.style().standardIcon(QStyle.SP_FileIcon)
-    _cache[p] = icon
+    _cache[key] = icon
     return icon
+
+
+def forget(p=None):
+    """Drop cached icons (all, or one item)."""
+    if p is None:
+        _cache.clear()
+        return
+    for k in [k for k in _cache if k[0] == os.path.normcase(os.path.abspath(p))]:
+        _cache.pop(k, None)
 
 
 def domain_of(url):

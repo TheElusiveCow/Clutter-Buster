@@ -9,6 +9,7 @@ import re
 
 from . import desktop_files as df
 from .icons import display_name
+from .shortcuts import lnk_info, url_info
 
 # (key, suggested name, accent, words in the item NAME, words in the shortcut TARGET path)
 CATEGORIES = [
@@ -101,51 +102,7 @@ def _has_word(name, kw):
 # ------------------------------------------------------------------ .lnk reading (read-only)
 def lnk_target(path):
     """Where a Windows shortcut points ('' if it can't be read). Pure reading, no COM."""
-    try:
-        with open(path, "rb") as f:
-            data = f.read(1 << 16)
-    except OSError:
-        return ""
-    try:
-        if len(data) < 0x4C or data[:4] != b"\x4c\x00\x00\x00":
-            return ""
-        flags = int.from_bytes(data[0x14:0x18], "little")
-        pos = 0x4C
-        if flags & 0x01:   # HasLinkTargetIDList
-            pos += 2 + int.from_bytes(data[pos:pos + 2], "little")
-        if flags & 0x02:   # HasLinkInfo
-            start = pos
-            hsize = int.from_bytes(data[start + 4:start + 8], "little")
-            li_flags = int.from_bytes(data[start + 8:start + 12], "little")
-            if li_flags & 0x01:
-                if hsize >= 0x24:
-                    uoff = int.from_bytes(data[start + 28:start + 32], "little")
-                    if uoff:
-                        s = start + uoff
-                        end = s
-                        while end + 1 < len(data) and data[end:end + 2] != b"\x00\x00":
-                            end += 2
-                        txt = data[s:end].decode("utf-16-le", "ignore")
-                        if txt:
-                            return txt
-                off = int.from_bytes(data[start + 16:start + 20], "little")
-                s = start + off
-                end = data.index(b"\x00", s)
-                return data[s:end].decode("mbcs" if os.name == "nt" else "latin-1", "ignore")
-            pos = start + int.from_bytes(data[start:start + 4], "little")
-        # no LinkInfo (e.g. Store apps): try the relative path string
-        unicode = bool(flags & 0x80)
-        for bit in (0x04, 0x08):    # name, relative path
-            if flags & bit:
-                n = int.from_bytes(data[pos:pos + 2], "little")
-                size = n * (2 if unicode else 1)
-                txt = data[pos + 2:pos + 2 + size].decode("utf-16-le" if unicode else "latin-1", "ignore")
-                pos += 2 + size
-                if bit == 0x08 and txt:
-                    return txt
-    except Exception:
-        return ""
-    return ""
+    return lnk_info(path)["target"]
 
 
 GAME_SCHEMES = ("steam:", "com.epicgames.launcher:", "uplay:", "ubisoft:", "origin:", "origin2:",
@@ -155,18 +112,8 @@ GAME_SCHEMES = ("steam:", "com.epicgames.launcher:", "uplay:", "ubisoft:", "orig
 
 def url_file_info(path):
     """(URL, IconFile) from a .url internet shortcut - reading only."""
-    url = icon = ""
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f.read(1 << 15).splitlines():
-                low = line.strip().lower()
-                if low.startswith("url="):
-                    url = line.strip()[4:]
-                elif low.startswith("iconfile="):
-                    icon = line.strip()[9:]
-    except OSError:
-        pass
-    return url, icon
+    info = url_info(path)
+    return info["url"], info["icon_file"]
 
 
 # ------------------------------------------------------------------ classifying

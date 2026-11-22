@@ -388,6 +388,62 @@ c.undo()
 assert json.dumps(c.layout.snapshot(), sort_keys=True) == snap
 assert {p: df.is_hidden(p) for p in all_items} == hidden_state
 assert not any(c.ledger.has(p) for p in (lm, disc, edge, racer, music, pub_game))
+# ================= fixes: resize hit zone, drag out, shortcut icons =================
+from PySide6.QtCore import QPoint as _QP, QPointF as _QPF, QRect as _QR  # noqa: E402
+from clutterbuster import group_widget as gw_mod, shortcuts  # noqa: E402
+assert gw_mod.EDGE >= 16 and gw_mod.CORNER >= 24
+assert gw_mod.edges_for(3, 50, 96, 112) == 1 and gw_mod.edges_for(93, 50, 96, 112) == 2
+assert gw_mod.edges_for(50, 108, 96, 112) == 8 and gw_mod.edges_for(80, 95, 96, 112) == 10, "24px grip corner"
+assert gw_mod.edges_for(48, 50, 96, 112) == 0
+# small tile: dragging the right edge makes the whole square bigger (it used to slide sideways)
+r0 = _QR(400, 300, 96, 112)
+r1 = gw_mod.resize_rect(r0, _QP(40, 0), 2, "tile")
+assert r1.left() == 400 and r1.top() == 300 and r1.width() == 136 and r1.height() == 152, r1
+r2 = gw_mod.resize_rect(r0, _QP(-40, 0), 1, "tile")
+assert r2.right() == r0.right() and r2.width() == 136, r2
+r3 = gw_mod.resize_rect(r0, _QP(0, -500), 8, "tile")
+assert r3.width() == gw_mod.TILE_MIN[0] and r3.top() == 300
+r4 = gw_mod.resize_rect(_QR(100, 100, 340, 250), _QP(60, 30), 10, "panel")
+assert (r4.width(), r4.height(), r4.left(), r4.top()) == (400, 280, 100, 100)
+# press decision == cursor decision, for tiles and panels, all over the widget
+tid_ = c.create_group("ResizeTile", edit=False, items=[{"path": lm}])
+pid_ = c.create_group("ResizePanel", edit=False, mode="panel", items=[{"path": edge}])
+for gid_ in (tid_, pid_):
+    w_ = c.widgets[gid_]
+    for yy in range(0, w_.height(), 3):
+        for xx in range(0, w_.width(), 3):
+            kind, e = w_.hit(_QPF(xx, yy))
+            assert (kind == "resize") == bool(w_.edges_at(_QPF(xx, yy))) and (w_.item_at(_QPF(xx, yy)) is None or not e)
+    w_.grab()
+c.undo()
+c.undo()
+# drag out of a group onto the desktop: shown again, file not moved, one Undo step
+dgid = c.create_group("DragOut", edit=False)
+c.add_paths(dgid, [lm, jpg])
+assert df.is_hidden(lm) and c.ledger.has(lm)
+n_undo = len(c.undo_stack._items)
+assert c.drag_out(dgid, lm)
+assert not df.is_hidden(lm) and not c.ledger.has(lm) and c.layout.group_of(lm) is None
+assert os.path.exists(lm) and len(c.undo_stack._items) == n_undo + 1
+assert c.undo_stack.next_label() == "drag out of group"
+c.undo()
+assert df.is_hidden(lm) and c.layout.group_of(lm)["id"] == dgid
+assert not c.drag_out(dgid, odd), "items not in the group are ignored"
+c.delete_group(dgid)
+assert not df.is_hidden(lm)
+# shortcut / internet-shortcut reading (icons come from IconLocation / IconFile)
+info = shortcuts.url_info(gurl)
+assert info["url"].startswith("com.epicgames.launcher://")
+os.environ["CB_TEST_DIR"] = tmp
+u2 = os.path.join(tmp, "Sims.url")
+with open(u2, "w") as fh:
+    fh.write("[InternetShortcut]\nURL=steam://rungameid/1\nIconFile=%CB_TEST_DIR%\\x.ico\nIconIndex=2\n")
+info = shortcuts.url_info(u2)
+assert info["icon_file"] == tmp + "\\x.ico" and info["icon_index"] == 2, info
+assert shortcuts.lnk_info(racer)["target"].endswith("racer.exe")
+from clutterbuster import icons as icons_mod  # noqa: E402
+i1, i2 = icons_mod.icon_for(lm), icons_mod.icon_for(pdf)
+assert icons_mod.icon_for(lm) is i1 and i2 is not i1, "icons are cached per item, not per file type"
 # --- the Remove confirmation: 'also delete the program folder' starts unticked; Cancel = nothing
 from PySide6.QtCore import QTimer  # noqa: E402
 seen = {}

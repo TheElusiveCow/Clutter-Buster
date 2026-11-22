@@ -191,16 +191,36 @@ def read_item(mime):
         return None
 
 
+def ghost_pixmap(icon, size=64):
+    """A see-through copy of the item's icon that follows the mouse while dragging."""
+    src = icon.pixmap(QSize(size, size))
+    pm = QPixmap(src.size())
+    pm.setDevicePixelRatio(src.devicePixelRatio())
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setOpacity(0.75)
+    p.drawPixmap(0, 0, src)
+    p.end()
+    return pm
+
+
 def start_item_drag(source, path, group_id, icon):
-    """Drag an item INSIDE Clutter Buster (onto another item, group or the dock).
+    """Drag an item INSIDE Clutter Buster (onto another item, group, tab or the dock), or out
+    onto the bare desktop to take it out of its group.
     SAFETY: the drag carries only our private format - no file list - so if it is
-    dropped on Explorer or the desktop, Windows ignores it. Nothing is copied or moved."""
+    dropped on Explorer or the desktop, Windows ignores it. Nothing is copied or moved.
+    Returns (drop action, cancelled_with_esc)."""
     md = QMimeData()
     md.setData(ITEM_MIME, QByteArray(json.dumps({"path": path, "group": group_id}).encode("utf-8")))
     drag = QDrag(source)
     drag.setMimeData(md)
-    drag.setPixmap(icon.pixmap(QSize(48, 48)))
-    return drag.exec(Qt.LinkAction | Qt.CopyAction, Qt.LinkAction)
+    pm = ghost_pixmap(icon)
+    drag.setPixmap(pm)
+    dpr = pm.devicePixelRatio() or 1
+    drag.setHotSpot(QPoint(int(pm.width() / dpr / 2), int(pm.height() / dpr / 2)))
+    desktop_layer.escape_pressed()          # clear the "pressed since last time" bit
+    action = drag.exec(Qt.LinkAction | Qt.CopyAction, Qt.LinkAction)
+    return action, desktop_layer.escape_pressed()
 
 
 def draw_badge(p, center, count, color):

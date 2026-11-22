@@ -6,7 +6,7 @@ import sys
 import time
 
 from PySide6.QtCore import QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -738,6 +738,36 @@ class Controller:
         self.sync_hidden()
         self.commit()
 
+    def drag_item(self, source, path, gid):
+        """Drag one item. Dropped on a group/tab/dock: handled there. Dropped on the bare
+        desktop: it leaves its group and shows on the desktop again (one Undo step)."""
+        from .glass import start_item_drag
+        action, cancelled = start_item_drag(source, path, gid, icons.icon_for(path))
+        if action != Qt.IgnoreAction or cancelled:
+            return False
+        if self._over_our_windows(QCursor.pos()) or not desktop_layer.cursor_over_desktop():
+            return False
+        return self.drag_out(gid, path)
+
+    def _over_our_windows(self, pt):
+        for w in self.all_windows():
+            if w is not None and w.isVisible() and w.frameGeometry().contains(pt):
+                return True
+        return False
+
+    def drag_out(self, gid, path):
+        """Take an item out of its group because it was dragged onto the desktop.
+        The file stays exactly where it is; only its Hidden flag is cleared (via the ledger)."""
+        g = self.layout.group(gid)
+        if g is None or not any(df.norm(it["path"]) == df.norm(path) for it in g["items"]):
+            return False
+        self.checkpoint("drag out of group")
+        self._take_item(gid, path)
+        self.sync_hidden()
+        self.commit()
+        log.info("Dragged out of %s: %s", g["name"], path)
+        return True
+
     def launch(self, p):
         if df.is_url(p):
             try:
@@ -1032,6 +1062,13 @@ class Controller:
                 QTimer.singleShot(0, self.rehide)
             elif cmd == "uninstall":
                 QTimer.singleShot(0, self.request_remove)
+            elif cmd.startswith("open:"):
+                name = cmd[5:].strip().lower()
+                g = next((x for x in self.layout.groups if x["name"].strip().lower() == name), None)
+                if g is not None:
+                    QTimer.singleShot(0, lambda gid=g["id"]: self.open_group(gid))
+            elif cmd == "closepopup":
+                QTimer.singleShot(0, self.popup.close_animated)
 
     def rehide(self):
         """Try again to hide grouped items that could not be hidden before
@@ -1133,6 +1170,13 @@ def run(argv):
         ok = send_command("quit")
         log.info("--quit: %s", "sent" if ok else "Clutter Buster was not running")
         return 0 if ok else 3
+    if "--open-group" in argv:
+        # open one group's popup (used for screenshots); nothing else changes
+        i = argv.index("--open-group")
+        ok = len(argv) > i + 1 and send_command("open:" + argv[i + 1])
+        return 0 if ok else 3
+    if "--close-popup" in argv:
+        return 0 if send_command("closepopup") else 3
     if "--rehide" in argv:
         # ask the running copy to try hiding grouped items that failed before
         ok = send_command("rehide")

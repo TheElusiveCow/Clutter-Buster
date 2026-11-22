@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from . import icons, sounds
 from .glass import (accept_drag, bring_to_top, draw_edit_outline, draw_glass, draw_neon, draw_shadow,
-                    parse_drop, read_item, rounded, start_item_drag)
+                    parse_drop, read_item, rounded)
 from .theme import THEME, accent_color, qcolor, rad
 
 MARGIN = 22        # room around the panel for its soft shadow
@@ -389,7 +389,7 @@ class GroupPopup(QWidget):
                     path = g["items"][self._press_item]["path"]
                     self._press = None
                     self._dragging = False
-                    start_item_drag(self, path, self.gid, icons.icon_for(path))
+                    self.c.drag_item(self, path, self.gid)
                     return
             if self._dragging:
                 self.move(self._press_win + d)   # drag the popup around

@@ -200,3 +200,41 @@ def desktop_covered():
     except Exception:
         return False
     return False
+
+
+def cursor_over_desktop():
+    """Is the mouse over the bare desktop (wallpaper / desktop icons)? Read-only.
+    Not over another app, the taskbar, or one of our own windows."""
+    if not IS_WIN:
+        return True          # test boxes: the caller already checked our own windows
+    try:
+        import os
+        pt = wintypes.POINT()
+        _u32.GetCursorPos(ctypes.byref(pt))
+        _u32.WindowFromPoint.argtypes = [wintypes.POINT]
+        _u32.WindowFromPoint.restype = wintypes.HWND
+        _u32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        _u32.GetAncestor.restype = wintypes.HWND
+        h = _u32.WindowFromPoint(pt)
+        if not h:
+            return False
+        root = _u32.GetAncestor(h, 2) or h    # GA_ROOT
+        pid = wintypes.DWORD(0)
+        _u32.GetWindowThreadProcessId(root, ctypes.byref(pid))
+        if pid.value == os.getpid():
+            return False
+        buf = ctypes.create_unicode_buffer(64)
+        _u32.GetClassNameW(root, buf, 64)
+        return buf.value in ("Progman", "WorkerW")
+    except Exception:
+        return False
+
+
+def escape_pressed():
+    """Was Esc pressed (used to tell a cancelled drag from a drop)?"""
+    if not IS_WIN:
+        return False
+    try:
+        return bool(_u32.GetAsyncKeyState(0x1B) & 0x8001)
+    except Exception:
+        return False
