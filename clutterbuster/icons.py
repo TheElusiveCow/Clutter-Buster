@@ -4,8 +4,8 @@ import os
 import sys
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QFileInfo, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QFileInfo, QObject, QPointF, QRectF, QRunnable, QSize, Qt, QThreadPool, Signal
+from PySide6.QtGui import QColor, QIcon, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QFileIconProvider, QStyle
 
 from .desktop_files import is_url
@@ -13,6 +13,80 @@ from .desktop_files import is_url
 _provider = None
 _cache = {}
 _globe = None
+THUMB = 256          # thumbnails are made big so they stay sharp at 150-200 % scaling
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".jfif", ".ico"}
+VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg", ".3gp", ".flv"}
+_pending = set()
+
+
+class _Notifier(QObject):
+    """Tells the windows to repaint when a thumbnail is ready (always delivered on the UI thread)."""
+    done = Signal(object, object)       # cache key, QImage or None
+    changed = Signal()
+
+
+notifier = None
+
+
+def _ensure_notifier():
+    global notifier
+    if notifier is None:
+        notifier = _Notifier()
+        notifier.done.connect(_thumb_ready)
+    return notifier
+
+
+def is_media(p):
+    return os.path.splitext(p)[1].lower() in IMAGE_EXT | VIDEO_EXT
+
+
+def make_thumbnail(p, size=THUMB):
+    """Picture/video thumbnail as a QImage: Windows' thumbnail first (also for hidden files and
+    videos), else load the picture with Qt. None = keep the file-type icon. Safe off the UI thread."""
+    img = None
+    if sys.platform == "win32":
+        try:
+            from . import winicons
+            img = winicons.shell_thumbnail(p, size)
+        except Exception:
+            img = None
+    if (img is None or img.isNull()) and os.path.splitext(p)[1].lower() in IMAGE_EXT:
+        r = QImageReader(p)
+        r.setAutoTransform(True)
+        s = r.size()
+        if s.isValid() and s.width() > 0 and s.height() > 0:
+            k = min(1.0, size / max(s.width(), s.height()))
+            r.setScaledSize(QSize(max(1, int(s.width() * k)), max(1, int(s.height() * k))))
+        img = r.read()
+    return img if img is not None and not img.isNull() else None
+
+
+class _ThumbJob(QRunnable):
+    def __init__(self, key, path):
+        super().__init__()
+        self.key, self.path = key, path
+
+    def run(self):
+        try:
+            img = make_thumbnail(self.path)
+        except Exception:
+            img = None
+        notifier.done.emit(self.key, img)
+
+
+def _thumb_ready(key, img):
+    _pending.discard(key)
+    if img is not None and not img.isNull():
+        _cache[key] = QIcon(QPixmap.fromImage(img))
+        notifier.changed.emit()
+
+
+def _queue_thumbnail(key, p):
+    if key in _pending:
+        return
+    _ensure_notifier()
+    _pending.add(key)
+    QThreadPool.globalInstance().start(_ThumbJob(key, p))
 
 
 def globe_icon():
@@ -57,6 +131,8 @@ def icon_for(p):
         return QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning)
     if key in _cache:
         return _cache[key]
+    if is_media(p):
+        _queue_thumbnail(key, p)    # made in the background; the type icon shows until then
     icon = None
     if sys.platform == "win32":
         try:

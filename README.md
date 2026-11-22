@@ -100,6 +100,34 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
 - **Settings > Apps**: Clutter Buster now appears in Windows Settings > Apps > Installed apps
   (with the broom icon, publisher Brian, version 0.5.0) and can be uninstalled from there.
 
+### Version 0.5.1: easier on the desktop
+- **Drag icons straight out.** Drag an icon out of a big panel, or one of the little icons
+  inside a small tile, onto the desktop and it shows there again; drop it on another group to
+  move it there. A plain click still opens / launches; dragging an empty spot still moves the
+  group, and the edges still resize.
+- **Real thumbnails** for pictures and videos (jpg, png, webp, gif, mp4, mkv...). Uses Windows'
+  own thumbnails (they work for hidden files too), made in the background and cached.
+- **Tabs on small tiles.** A group with 2+ tabs shows little pills (or dots when names don't
+  fit) at the bottom of its tile; click one to switch the preview in place. Clicking the rest
+  of the tile opens it on that tab. Big panels always show their tab bar.
+- **Name size buttons.** Hover a group's name: **A-** / **A+** (8-36 pt), or Ctrl + mouse
+  wheel over the name. The gear menu has a *Name size* slider for every group. One Undo per
+  burst. The pencil renames in place.
+- **Magnetic snapping.** Groups snap to each other (8 px gap), line up tops/lefts/centres and
+  snap to the screen edges and taskbar, with faint guide lines. Hold **Alt** to place freely.
+  Settings > Appearance > *Snap groups to each other*. *Tidy up* still snaps to the grid.
+- **Names in big panels**: Settings > Appearance > *Show names in big panels* (Auto / Always /
+  Never). Auto shows up to 2 lines when there's room; hover for the full name.
+- **Shared desktop permissions.** When a Public-desktop shortcut can't be hidden, a small
+  message asks first, then Windows shows ONE permission prompt for exactly those files
+  (`icacls <file> /grant you:M`). Clutter Buster itself never runs as admin. Turn it off in
+  Settings > General; retry from the group or broom menu: *Fix hiding permission...*.
+- **Choose the quick search shortcut**: Settings > Search, click the box and press the keys
+  (Ctrl/Alt/Shift + a key). If another app has it you're told and the old one stays.
+  *Reset to Ctrl+Space* puts it back.
+- **Settings**: the red *Remove Clutter Buster* button is always at the bottom left (pages
+  scroll now), and checkboxes have a clear box with a coloured fill and a white tick.
+
 ### Version 0.5: tabs, name styles, the gear menu
 - **Tabs inside groups.** Every group starts with one tab (no tab bar shown). Click the small
   **+** (top right of a popup or big panel, or right-click a group > *Add a tab*) to add one and

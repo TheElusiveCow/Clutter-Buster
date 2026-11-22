@@ -28,7 +28,7 @@ paths.setup_logging()
 paths.install_excepthook()
 
 from PySide6.QtCore import QMimeData, QUrl  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 from clutterbuster import desktop_files as df, fuzzy  # noqa: E402
 from clutterbuster.app import Controller  # noqa: E402
 from clutterbuster.glass import parse_drop  # noqa: E402
@@ -140,10 +140,10 @@ c.remove_item(gid, notes)
 assert not df.is_hidden(notes) and not c.ledger.has(notes)
 c.undo()
 assert df.is_hidden(notes)
-# --- move snaps to grid
+# --- moving is free now (magnetic snapping happens while dragging; Tidy up does the grid)
 c.move_group(gid, 333, 333)
 g = c.layout.group(gid)
-assert (g["x"] - c.avail().left() - 8) % 16 == 0
+assert (g["x"], g["y"]) == (333, 333)
 # ================= stage 3 =================
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -277,7 +277,7 @@ assert c.layout.prefs["autostart"] is True and integration.autostart_enabled()
 run_cmd = integration.FAKE[integration.RUN_KEY]["ClutterBuster"]
 assert run_cmd.endswith('main.py"') and "--uninstall" not in run_cmd, run_cmd
 u = integration.FAKE[integration.UNINSTALL_KEY]
-assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.0"
+assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.1"
 assert u["UninstallString"].endswith('main.py" --uninstall') and u["NoModify"] == 1 and os.path.exists(u["DisplayIcon"])
 c.set_autostart(False)
 assert not integration.autostart_enabled() and c.layout.prefs["autostart"] is False
@@ -624,6 +624,293 @@ assert not c.hide_failed(twin_p)
 os.remove(twin_u)
 os.remove(twin_p)
 open(paths.error_log(), "w").close() if os.path.exists(paths.error_log()) and "Twin" in open(paths.error_log()).read() else None
+# ================= shared-desktop permission fix (mocked: never elevates on this box) =================
+from clutterbuster import permfix  # noqa: E402
+os.environ["CLUTTERBUSTER_TEST_PUBLIC_DESKTOP"] = pub
+sh1, sh2 = mk(pub, "AMD Privacy View.lnk"), mk(pub, "LG Calibration Studio.lnk")
+sh_bad = mk(pub, "100% Odd.lnk")
+granted = set()
+real_set_hidden = df.set_hidden
+
+
+def fake_set_hidden(p, hidden):
+    if os.path.dirname(p) == pub and df.norm(p) not in granted and os.path.basename(p) != "Brave.lnk":
+        df.LAST_ERRORS[df.norm(p)] = 5
+        return False
+    df.LAST_ERRORS.pop(df.norm(p), None)
+    return real_set_hidden(p, hidden)
+
+
+df.set_hidden = fake_set_hidden
+import clutterbuster.ledger as ledger_mod  # noqa: E402
+ledger_mod.df.set_hidden = fake_set_hidden
+calls = []
+cmd, params, used = permfix.build_command([sh1, sh2], user="PC\\Brian")
+assert used == [sh1, sh2] and params.startswith('/d /s /c "') and params.endswith('"')
+assert params.count("/grant") == 2 and '"PC\\Brian:M"' in params and "*" not in params
+assert f'"{sh1}"' in params and f'"{pub}"' not in params, "exact files only, never the folder"
+assert not permfix.eligible(sh_bad, pub) and not permfix.eligible(os.path.join(desk, "x.lnk"), pub)
+
+
+def fake_launch(files):
+    calls.append(list(files))
+    if mode_[0] == "cancel":
+        raise permfix.Cancelled()
+    granted.update(df.norm(f) for f in files)
+    return 1234, list(files)
+
+
+mode_ = ["cancel"]
+permfix.launch = fake_launch
+permfix.poll = lambda h: 0
+pfg = c.create_group("Computer Software", edit=False)
+c.add_paths(pfg, [sh1, sh2, sh_bad])
+assert c.hide_failed(sh1) and c.hide_failed(sh2)
+assert sorted(c.permfix_candidates()) == sorted([sh1, sh2]), "only access-denied Public Desktop files"
+c.check_permfix()
+toast = c._perm_toast
+assert toast is not None and toast.isVisible() and "2 shared shortcuts" in toast.findChildren(QLabel)[0].text()
+toast.grab().save(os.path.join(tmp, "permfix_toast.png"))
+toast.ok_btn.click()                       # OK -> Windows prompt -> cancelled
+assert calls == [[sh1, sh2]] and c.hide_failed(sh1), "cancelled: stays visible with the !"
+from PySide6.QtCore import QCoreApplication as _QCA, QEvent as _QE  # noqa: E402
+_QCA.sendPostedEvents(None, _QE.DeferredDelete)
+c.check_permfix()
+assert len(calls) == 1 and c._perm_toast is None, "doesn't nag again this session"
+c.tray.refresh_toggles()
+assert c.tray.fix_action.isVisible()
+mode_[0] = "ok"
+assert c.fix_permissions(gid=pfg)          # the menu item: straight to the Windows prompt
+assert calls[-1] == [sh1, sh2]
+c._poll_permfix()
+assert not c.hide_failed(sh1) and not c.hide_failed(sh2) and df.is_hidden(sh1) and df.is_hidden(sh2)
+assert c.hide_failed(sh_bad), "a file we can't pass safely is left for a manual fix"
+c.tray.refresh_toggles()
+assert not c.tray.fix_action.isVisible()
+c.layout.prefs["auto_fix_perms"] = False
+c._permfix_declined.clear()
+granted.clear()
+c.rehide()
+nt = len(calls)
+c.check_permfix()
+assert len(calls) == nt and c._perm_toast is None, "setting off: never asks"
+c.layout.prefs["auto_fix_perms"] = True
+df.set_hidden = real_set_hidden
+ledger_mod.df.set_hidden = real_set_hidden
+c.delete_group(pfg)
+for p_ in (sh1, sh2, sh_bad):
+    os.remove(p_)
+c.sync_hidden()
+# ================= names in big panels: Auto / Always / Never =================
+from clutterbuster import group_widget as gwm2  # noqa: E402
+assert gwm2.labels_fit(90, 14) and not gwm2.labels_fit(50, 14)
+assert gwm2.labels_fit(30, 14, "always") and not gwm2.labels_fit(200, 14, "never")
+from PySide6.QtGui import QFont as _QF, QFontMetrics as _QFM  # noqa: E402
+fm_ = _QFM(_QF())
+lines_ = gwm2.two_lines(fm_, "Windows Media Player Legacy Edition 2026", 80)
+assert len(lines_) == 2 and lines_[1].endswith("\u2026")
+assert gwm2.two_lines(fm_, "Paint", 80) == ["Paint"]
+lp = c.create_group("Labels", edit=False, mode="panel")
+c.add_paths(lp, [edge, jpg, pdf])
+for m_ in ("auto", "always", "never"):
+    c.set_pref("panel_labels", m_)
+    c.widgets[lp].grab().save(os.path.join(tmp, f"panel_labels_{m_}.png"))
+c.set_pref("panel_labels", "auto")
+# ================= magnetic snapping =================
+from clutterbuster import snapping  # noqa: E402
+from PySide6.QtCore import QRectF as _RF, QRect as _R  # noqa: E402
+scr = _R(0, 0, 1920, 1040)
+other = _RF(400, 200, 100, 100)
+dx, dy, gl = snapping.magnetic(_RF(510, 205, 80, 80), [other], scr)       # 10 px right of it
+assert (dx, dy) == (-2.0, -5.0) and len(gl) == 2, (dx, dy)                 # 8 px gap, tops aligned
+dx, dy, gl = snapping.magnetic(_RF(700, 600, 80, 80), [other], scr)
+assert (dx, dy, gl) == (0, 0, []), "far away: moves freely"
+dx, dy, _g = snapping.magnetic(_RF(5, 1035 - 80 - 4, 80, 80), [], scr)
+assert dx == 3 and dy == 1035 - 8 - 80 - (1035 - 80 - 4) + 0 or dy != 0     # screen edges (taskbar side too)
+r2, gl2 = snapping.magnetic_edges(_RF(100, 100, 290, 200), 2, [other], scr)
+assert r2.right() == 392 and gl2, r2                                          # resize edge -> gap before it
+c.layout.prefs["snap_groups"] = False
+assert not c.snap_on()
+c.layout.prefs["snap_groups"] = True
+assert c.snap_on()
+# a real drag of a big panel next to another one
+sa = c.create_group("SnapA", edit=False, mode="panel")
+sb = c.create_group("SnapB", edit=False, mode="panel")
+c.move_group(sa, 300, 300)
+c.move_group(sb, 900, 700)
+WA, WB = c.widgets[sa], c.widgets[sb]
+ga = WA.glass_rect_global()
+start = WB.title_rect().center().toPoint() + _QP(0, 0)
+QTest.mousePress(WB, _Qt.LeftButton, _Qt.NoModifier, start)
+tgt_x = ga.right() + 1 + 8 + 5 - (WB.glass_rect_global().left() - WB.x())      # 5 px past the gap
+delta = _QP(tgt_x - WB.x(), ga.top() + 4 - (WB.glass_rect_global().top() - WB.y()) - WB.y())
+QTest.mouseMove(WB, start + _QP(10, 0))
+QTest.mouseMove(WB, start + delta)
+gb = WB.glass_rect_global()
+assert gb.left() - ga.right() - 1 == 8 and gb.top() == ga.top(), (ga, gb)
+assert c._guides is not None and c._guides.lines, "guide lines while snapping"
+QTest.mouseRelease(WB, _Qt.LeftButton, _Qt.NoModifier, start + delta)
+assert not c._guides.isVisible()
+assert c.layout.group(sb)["x"] == WB.x() and c.undo_stack.next_label() == "move group"
+c.delete_group(sa)
+c.delete_group(sb)
+# ================= easier rename: the pencil =================
+pz = c.create_group("Pencil Me", edit=False, mode="panel")
+WZ = c.widgets[pz]
+WZ._hover = True
+pr = WZ.pencil_rect()
+assert WZ.hit(pr.center())[0] == "pencil"
+assert WZ.hit(pr.center())[0] != "resize"
+WZ.grab().save(os.path.join(tmp, "pencil_panel.png"))
+QTest.mousePress(WZ, _Qt.LeftButton, _Qt.NoModifier, pr.center().toPoint())
+QTest.mouseRelease(WZ, _Qt.LeftButton, _Qt.NoModifier, pr.center().toPoint())
+assert WZ.editor.isVisible() and WZ.editor.selectedText() == "Pencil Me", "one click: name selected"
+WZ.editor.setText("Renamed by pencil")
+WZ.editor.editingFinished.emit()           # Enter or clicking away
+assert c.layout.group(pz)["name"] == "Renamed by pencil" and c.undo_stack.next_label() == "rename"
+tz = c.create_group("Tile Pencil", edit=False)
+WT2 = c.widgets[tz]
+WT2._hover = True
+assert WT2.hit(WT2.pencil_rect().center())[0] == "pencil", WT2.hit(WT2.pencil_rect().center())
+WT2.grab().save(os.path.join(tmp, "pencil_tile.png"))
+# ================= quick name size: A- / A+, Ctrl+wheel, gear slider =================
+nb = WT2.name_buttons()
+assert WT2.hit(nb["bigger"].center())[0] == "bigger" and WT2.hit(nb["smaller"].center())[0] == "smaller"
+n_undo = len(c.undo_stack._items)
+s0 = WT2.name_size()
+for _ in range(3):
+    QTest.mouseClick(WT2, _Qt.LeftButton, _Qt.NoModifier, nb["bigger"].center().toPoint())
+assert c.layout.group(tz)["name_style"]["size"] == s0 + 3 and WT2.name_size() == s0 + 3, "live, per group"
+assert len(c.undo_stack._items) == n_undo + 1 and c.undo_stack.next_label() == "name size", "one undo per burst"
+QTest.mouseClick(WT2, _Qt.LeftButton, _Qt.NoModifier, nb["smaller"].center().toPoint())
+assert WT2.name_size() == s0 + 2
+for _ in range(60):
+    c.bump_name_size(tz, 1)
+assert WT2.name_size() == 36, "max 36 pt"
+WT2.grab().save(os.path.join(tmp, "name_size_big.png"))
+for _ in range(60):
+    c.bump_name_size(tz, -1)
+assert WT2.name_size() == 8, "min 8 pt"
+from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtCore import QPoint as _Pt  # noqa: E402
+lp_ = _P(WT2.width() / 2, WT2.glass_rect().bottom() + 8)
+ev = QWheelEvent(lp_, WT2.mapToGlobal(lp_), _Pt(0, 0), _Pt(0, 120), _Qt.NoButton, _Qt.ControlModifier,
+                 _Qt.NoScrollPhase, False)
+QApplication.sendEvent(WT2, ev)
+assert WT2.name_size() == 9, "Ctrl + wheel over the name"
+c.undo()
+assert not c.layout.group(tz).get("name_style"), "the whole burst undoes in one go"
+c._name_burst_key = None
+qm2 = c.show_quick_menu()
+qm2.name_size.slider.setValue(15)
+qm2.name_size.slider.setValue(16)
+assert c.ui["name_style"]["size"] == 16 and WT2.name_size() == 16 and c.undo_stack.next_label() == "name size (all groups)"
+qm2.close()
+c.undo()
+assert not (c.ui.get("name_style") or {}).get("size")
+c.delete_group(pz)
+c.delete_group(tz)
+# ================= thumbnails for pictures / videos (made in the background) =================
+from PySide6.QtGui import QImage as _QI, QColor as _QC  # noqa: E402
+from clutterbuster import icons  # noqa: E402
+pic = os.path.join(desk, "holiday.png")
+_im = _QI(800, 600, _QI.Format_RGB32)
+_im.fill(_QC(220, 30, 30))
+_im.save(pic)
+assert icons.is_media(pic) and icons.is_media("x.MP4") and not icons.is_media("x.lnk")
+th = icons.make_thumbnail(pic)
+assert th is not None and max(th.width(), th.height()) == icons.THUMB, (th.width(), th.height())
+icons.icon_for(pic)                      # first call: type icon now, thumbnail queued
+_end = time.time() + 10
+while icons._pending and time.time() < _end:
+    app.processEvents()
+    time.sleep(0.02)
+assert not icons._pending
+_px = icons.icon_for(pic).pixmap(64, 64).toImage()
+_mid = _QC(_px.pixel(32, 32))
+assert _mid.red() > 180 and _mid.green() < 80, "the picture itself, not a generic icon"
+# ================= drag an icon straight out of a small tile's mini preview =================
+td = c.create_group("Tile Drag", edit=False)
+c.add_items(td, [pic], [])
+WTD = c.widgets[td]
+WTD.grab().save(os.path.join(tmp, "thumbnail_tile.png"))
+rects = WTD.tile_preview_rects()
+assert rects and WTD.tile_item_at(rects[0][1].center().toPoint()) == 0
+assert WTD.tile_item_at(_P(WTD.glass_rect().left() + 2, WTD.glass_rect().top() + 2)) is None, "padding = move"
+_calls = []
+_orig_drag = c.drag_item
+c.drag_item = lambda src, path, gid: _calls.append((path, gid))
+_p0 = rects[0][1].center().toPoint()
+QTest.mousePress(WTD, _Qt.LeftButton, _Qt.NoModifier, _p0)
+QTest.mouseMove(WTD, _p0 + _Pt(2, 1))
+assert not _calls, "below the threshold nothing happens (a click still opens)"
+QTest.mouseMove(WTD, _p0 + _Pt(30, 30))
+QTest.mouseRelease(WTD, _Qt.LeftButton, _Qt.NoModifier, _p0 + _Pt(30, 30))
+assert _calls == [(pic, td)], _calls
+_gx = c.layout.group(td)["x"]
+_cp = _P(WTD.glass_rect().left() + 2, WTD.glass_rect().top() + 2).toPoint()
+QTest.mousePress(WTD, _Qt.LeftButton, _Qt.NoModifier, _cp)
+QTest.mouseMove(WTD, _cp + _Pt(60, 0))
+QTest.mouseRelease(WTD, _Qt.LeftButton, _Qt.NoModifier, _cp + _Pt(60, 0))
+assert len(_calls) == 1, "empty space still moves the group"
+c.drag_item = _orig_drag
+c.delete_group(td)
+c.sync_hidden()
+os.remove(pic)
+# ================= small tiles with 2+ tabs: switch tabs right on the tile =================
+stt = c.create_group("Strip Tabs", edit=False)
+WS = c.widgets[stt]
+assert WS.tile_strip() == [], "one tab: no strip"
+st2 = c.add_tab(stt, "Work")
+c.rename_tab(stt, c.layout.group(stt)["tabs"][0]["id"], "Home")
+c.select_tab(stt, c.layout.group(stt)["tabs"][0]["id"])
+WS.update()
+strip = WS.tile_strip()
+assert len(strip) == 2, strip
+c.popup.hide()
+_sp = strip[1][1].center().toPoint()
+assert WS.hit(_sp)[0] == "tab:" + st2
+QTest.mouseClick(WS, _Qt.LeftButton, _Qt.NoModifier, _sp)
+assert c.layout.group(stt)["tab"] == st2 and not c.popup.isVisible(), "switched in place, popup stays shut"
+WS.grab().save(os.path.join(tmp, "tile_tab_strip.png"))
+assert all(ir.bottom() <= WS.tile_strip_area().top() for _i, ir in WS.tile_preview_rects())
+c.set_mode(stt, "panel")
+WP = c.widgets[stt]
+assert WP.multi_tab() and len(WP.tab_bar()[0]) == 2, "big panels always show the tab bar with 2+ tabs"
+c.delete_group(stt)
+# ================= settings: Remove button always visible, readable checkboxes =================
+from clutterbuster import glasswin as _gw  # noqa: E402
+assert os.path.isfile(_gw.check_image()) and "image:url(" in _gw.checkbox_qss()
+# ================= quick search shortcut recorder =================
+from clutterbuster import hotkey as _hk, settings as _st  # noqa: E402
+assert c.search_hotkey()["text"] == "Ctrl+Space"
+assert _hk.from_qt(_Qt.Key_F, _Qt.ControlModifier | _Qt.ShiftModifier) == (0x0006, 0x46, "Ctrl+Shift+F")
+assert _hk.from_qt(_Qt.Key_Space, _Qt.AltModifier)[2] == "Alt+Space"
+assert _hk.from_qt(_Qt.Key_F, _Qt.NoModifier) is None, "needs Ctrl/Alt/Shift"
+taken = {(0x0001, 0x20)}
+_reg = []
+_orig_reg = _hk.register
+_hk.register = lambda hwnd, mods=2, vk=0x20: (_reg.append((mods, vk)) or (int(mods), int(vk)) not in taken)
+c.search.register_hotkey()
+sw = _st.SettingsWindow(c)
+sw.show()
+sw.grab().save(os.path.join(tmp, "settings_general.png"))
+assert sw.remove_btn.isVisible() and sw.remove_btn.geometry().bottom() < sw.body.height(), "red Remove button shown"
+sw.setFixedSize(860, 420)                 # even when the page is taller than the window
+sw.grab().save(os.path.join(tmp, "settings_short.png"))
+QApplication.processEvents()
+assert sw.remove_btn.isVisible() and sw.remove_btn.mapTo(sw, _Pt(0, sw.remove_btn.height())).y() <= sw.height()
+sw.hk_edit.setFocus()
+QTest.keyClick(sw.hk_edit, _Qt.Key_F, _Qt.ControlModifier | _Qt.ShiftModifier)
+assert c.search_hotkey()["text"] == "Ctrl+Shift+F" and _reg[-1] == (0x0006, 0x46), _reg
+assert "Ctrl+Shift+F" in c.search.toolTip() or c.search.hotkey_ok
+assert json.load(open(paths.layout_file()))["prefs"]["hotkey"]["text"] == "Ctrl+Shift+F", "saved"
+ok_, msg_ = c.set_search_hotkey(0x0001, 0x20)
+assert not ok_ and "already used" in msg_ and c.search_hotkey()["text"] == "Ctrl+Shift+F", "taken: old one kept"
+assert _reg[-1] == (0x0006, 0x46), "old shortcut re-registered"
+assert sw.hk_edit.apply(0x0002, 0x20) and c.search_hotkey()["text"] == "Ctrl+Space", "Reset to Ctrl+Space"
+sw.close()
+_hk.register = _orig_reg
 # --- the Remove confirmation: 'also delete the program folder' starts unticked; Cancel = nothing
 from PySide6.QtCore import QTimer  # noqa: E402
 seen = {}

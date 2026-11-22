@@ -104,8 +104,8 @@ def bring_to_top(widget):
     def go():
         if widget.isVisible():
             desktop_layer.make_topmost(int(widget.winId()))
-    QTimer.singleShot(0, go)
-    QTimer.singleShot(250, go)
+    QTimer.singleShot(0, widget, go)      # skipped if the window is gone by then
+    QTimer.singleShot(250, widget, go)
 
 
 def safe_drop_action(event):

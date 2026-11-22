@@ -48,6 +48,8 @@ class Tray(QSystemTrayIcon):
         self.hide_action.setCheckable(True)
         self.lock_action = m.addAction("Lock layout", lambda: self.c.set_locked(not self.c.layout.prefs.get("locked")))
         self.lock_action.setCheckable(True)
+        self.fix_action = m.addAction("\u26A0  Fix hiding permission...", lambda: self.c.fix_permissions())
+        self.fix_action.setVisible(False)
         m.aboutToShow.connect(self.refresh_toggles)
         m.addSeparator()
         m.addAction("Quit (shows everything on the desktop again)", self.c.quit)
@@ -69,3 +71,9 @@ class Tray(QSystemTrayIcon):
         prefs = self.c.layout.prefs
         self.hide_action.setChecked(bool(prefs.get("groups_hidden")))
         self.lock_action.setChecked(bool(prefs.get("locked")))
+        try:
+            n = len(self.c.permfix_candidates())
+        except Exception:
+            n = 0
+        self.fix_action.setVisible(n > 0)
+        self.fix_action.setText(f"\u26A0  Fix hiding permission... ({n})" if n else "Fix hiding permission...")

@@ -130,6 +130,26 @@ def is_hidden(p):
     return None if a is None else bool(a & FILE_ATTRIBUTE_HIDDEN)
 
 
+LAST_ERRORS = {}     # norm path -> Windows error code of the last failed Hidden change (5 = access denied)
+ERROR_ACCESS_DENIED = 5
+
+
+def last_error(p):
+    return LAST_ERRORS.get(norm(p))
+
+
+def public_desktop_dir():
+    """The shared Public Desktop folder (FOLDERID_PublicDesktop), or None."""
+    if os.environ.get("CLUTTERBUSTER_SHOWCASE"):
+        return None
+    if IS_WIN:
+        try:
+            return _known_folder(FOLDERID_PUBLIC_DESKTOP)
+        except Exception:
+            return None
+    return os.environ.get("CLUTTERBUSTER_TEST_PUBLIC_DESKTOP") or None   # tests only
+
+
 def set_hidden(p, hidden):
     """Turn the Hidden flag on/off. Returns True if it worked. Touches nothing else."""
     a = get_attrs(p)
@@ -149,8 +169,10 @@ def set_hidden(p, hidden):
     ok = bool(_k32.SetFileAttributesW(p, new))
     if not ok:
         err = ctypes.get_last_error()
+        LAST_ERRORS[norm(p)] = err
         log.info("Could not change Hidden flag on %s (Windows error %s)", p, err)
         return False
+    LAST_ERRORS.pop(norm(p), None)
     notify_changed(p)
     return True
 

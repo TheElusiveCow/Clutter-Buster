@@ -113,8 +113,10 @@ class SearchBar(_Bar):
     def search_global_center_x(self):
         return self.mapToGlobal(self.search_rect().center().toPoint()).x()
 
-    def register_hotkey(self):
-        self.hotkey_ok = hotkey.register(int(self.winId()))
+    def register_hotkey(self, hk=None):
+        hk = hk or self.c.search_hotkey()
+        self.hotkey_ok = hotkey.register(int(self.winId()), hk["mods"], hk["vk"])
+        self.update()
         return self.hotkey_ok
 
     def on_hotkey(self, hotkey_id):
@@ -138,12 +140,12 @@ class SearchBar(_Bar):
         p.setPen(qcolor("hint_text"))
         p.drawText(sr.adjusted(48, 0, -10, 0), Qt.AlignLeft | Qt.AlignVCenter, "Search shortcuts and files...")
         p.setFont(hf)
-        hint = "Ctrl+Space" if self.hotkey_ok is not False else "click to search"
+        hint = self.c.search_hotkey()["text"] if self.hotkey_ok is not False else "click to search"
         p.drawText(sr.adjusted(0, 0, -16, 0), Qt.AlignRight | Qt.AlignVCenter, hint)
 
     def on_hover(self, h):
         self.setCursor(Qt.IBeamCursor if h == "search" else Qt.ArrowCursor)
-        self.setToolTip("Search (Ctrl+Space)" if h else "")
+        self.setToolTip(f"Search ({self.c.search_hotkey()['text']})" if h else "")
 
     def on_click(self, key):
         if key == "search":

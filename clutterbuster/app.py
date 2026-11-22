@@ -5,12 +5,12 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import __version__, desktop_files as df, desktop_layer, icons, integration, organize, paths, removal, sounds, theme
+from . import __version__, desktop_files as df, desktop_layer, icons, integration, organize, paths, permfix, removal, sounds, theme
 from .dock import Dock
 from .glass import ask
 from .group_widget import GroupWidget, first_free_left, group_size, min_size, snap_rect
@@ -54,6 +54,9 @@ class Controller:
         self.redo_stack = []
         self.failed_hides = set()     # norm paths Windows wouldn't let us hide (shown with an orange "!")
         self.quick_menu = None
+        self._permfix_declined = set()   # shared shortcuts you said "Not now" / "No" to (this session)
+        self._permfix_job = None         # (process handle, files, started) while the helper runs
+        self._perm_toast = None
         self.widgets = {}
         self._told_about_show_hidden = False
         self.edit_mode = False
@@ -101,7 +104,7 @@ class Controller:
         # 3) Ctrl+Space everywhere (no Windows key needed)
         if not showcase:
             if not self.search.register_hotkey():
-                self.notify("Ctrl+Space is already used by another app, so that shortcut is off. "
+                self.notify(f"{self.search_hotkey()['text']} is already used by another app, so that shortcut is off. "
                             "Click the search bar at the top instead.")
             self.search.update()
 
@@ -124,6 +127,17 @@ class Controller:
         self.save_timer = QTimer()
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.layout.save)
+        self._icons_timer = QTimer()
+        self._icons_timer.setSingleShot(True)
+        self._icons_timer.timeout.connect(self._repaint_all)
+        icons._ensure_notifier().changed.connect(lambda: self._icons_timer.start(80))   # thumbnails ready
+        self.permfix_timer = QTimer()
+        self.permfix_timer.setSingleShot(True)
+        self.permfix_timer.timeout.connect(self.check_permfix)
+        self.permfix_poll = QTimer()
+        self.permfix_poll.timeout.connect(self._poll_permfix)
+        if self.failed_hides and not showcase:
+            self.permfix_timer.start(2500)
         self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self.search)
         self.esc_shortcut.setContext(Qt.ApplicationShortcut)
         self.esc_shortcut.setEnabled(False)
@@ -299,6 +313,9 @@ class Controller:
         self.layout.prefs[key] = value
         if key == "dock_autohide":
             self.apply_dock_mode()
+        elif key == "panel_labels":
+            for w in self.widgets.values():
+                w.update()
         elif key in ("sounds", "volume"):
             sounds.SETTINGS.update(on=bool(self.layout.prefs["sounds"]), volume=int(self.layout.prefs["volume"]))
             if key == "volume":
@@ -429,6 +446,7 @@ class Controller:
                 "explorer_shows_hidden_files": df.explorer_shows_hidden_files(),
                 "popup_style": "compact frosted panel (no full-screen blur)",
                 "hotkey_ctrl_space": self.search.hotkey_ok,
+                "search_shortcut": self.search_hotkey()["text"],
                 "groups": len(self.layout.groups),
                 "favorites": len(self.layout.favorites),
                 "ledger_hidden_items": len(self.ledger.hidden),
@@ -463,7 +481,100 @@ class Controller:
         statuses = self.hider.sync(self.layout.wanted_hidden())
         failed = [p for p, s in statuses.items() if s == "failed"]
         self.failed_hides = {df.norm(p) for p in failed}
+        if failed and not self.showcase and hasattr(self, "permfix_timer"):
+            self.permfix_timer.start(1200)        # offer the shared-desktop permission fix
         return statuses, failed
+
+    # ------------------------------------------------------------------ shared-desktop permission fix
+    def permfix_candidates(self, gid=None):
+        """Grouped items on the Public Desktop that Windows refused to hide with 'access denied'."""
+        wanted = self.layout.wanted_hidden()
+        paths_ = [p for p, g in wanted.items() if df.norm(p) in self.failed_hides and (gid is None or g == gid)]
+        return permfix.candidates(paths_)
+
+    def check_permfix(self):
+        """After hiding: if shared shortcuts failed, ask once (glass toast), then one UAC prompt."""
+        if self.showcase or self._permfix_job is not None or not self.layout.prefs.get("auto_fix_perms", True):
+            return
+        files = [p for p in self.permfix_candidates() if df.norm(p) not in self._permfix_declined]
+        if not files or self._perm_toast is not None:
+            return
+        from .glass_toast import GlassToast
+        n = len(files)
+        self._perm_toast = GlassToast(
+            f"Windows will ask for permission to hide {n} shared shortcut{'s' if n != 1 else ''}",
+            "They're on the shared Public desktop: " + ", ".join(os.path.splitext(os.path.basename(p))[0]
+                                                                  for p in files[:4]) + (" ..." if n > 4 else ""),
+            ok_text="OK", cancel_text="Not now")
+        self._perm_toast.accepted.connect(lambda: self.fix_permissions(files))
+        self._perm_toast.rejected.connect(lambda: self._decline_permfix(files, "Not now"))
+        self._perm_toast.destroyed.connect(lambda *_: setattr(self, "_perm_toast", None))
+        self._perm_toast.show_corner(self.avail())
+
+    def _decline_permfix(self, files, why):
+        self._permfix_declined |= {df.norm(p) for p in files}
+        log.info("Shared-desktop permission fix: %s (%d file(s)) - they stay visible, marked with !", why, len(files))
+        self.notify("Those shared shortcuts stay on the desktop for now (orange !). Use \"Fix hiding "
+                    "permission...\" in the broom menu or the group's menu whenever you like.")
+
+    def fix_permissions(self, files=None, gid=None):
+        """Run ONE elevated icacls helper for exactly these files, wait, then hide them again.
+        Only the helper asks for admin rights - Clutter Buster itself never does."""
+        if self._permfix_job is not None:
+            return False
+        files = files if files is not None else self.permfix_candidates(gid)
+        if not files:
+            self.notify("Nothing to fix - everything in your groups is hidden.")
+            return False
+        log.info("Shared-desktop permission fix: asking Windows to let %s change: %s",
+                 permfix.current_user(), "; ".join(files))
+        try:
+            handle, used = permfix.launch(files)
+        except permfix.Cancelled:
+            self._decline_permfix(files, "the Windows permission prompt was cancelled")
+            self.update_permfix_ui()
+            return False
+        except OSError as e:
+            log.error("Shared-desktop permission fix could not start: %s", e)
+            self.notify(f"Couldn't ask Windows for permission ({e}). The shortcuts stay visible.")
+            return False
+        self._permfix_job = (handle, used, time.monotonic())
+        self.permfix_poll.start(300)
+        return True
+
+    def _poll_permfix(self):
+        if self._permfix_job is None:
+            self.permfix_poll.stop()
+            return
+        handle, used, t0 = self._permfix_job
+        code = permfix.poll(handle)
+        if code is None and time.monotonic() - t0 < 120:
+            return
+        self.permfix_poll.stop()
+        self._permfix_job = None
+        log.info("Shared-desktop permission helper finished (exit code %s); hiding again", code)
+        self.hider.failed.clear()
+        statuses, failed = self.sync_hidden()
+        still = [p for p in used if df.norm(p) in self.failed_hides]
+        fixed = len(used) - len(still)
+        log.info("Shared-desktop permission fix: %d hidden now, %d still visible", fixed, len(still))
+        if still:
+            self._permfix_declined |= {df.norm(p) for p in still}
+            self.notify(f"{len(still)} shared shortcut(s) still couldn't be hidden (orange !).")
+        elif fixed:
+            self.notify(f"Done - {fixed} shared shortcut{'s' if fixed != 1 else ''} hidden.")
+        self.commit()
+        self.write_status()
+        self.update_permfix_ui()
+
+    def update_permfix_ui(self):
+        if hasattr(self.tray, "refresh_toggles"):
+            self.tray.refresh_toggles()
+
+    def _repaint_all(self):
+        for w in self.all_windows():
+            if w.isVisible():
+                w.update()
 
     def hide_failed(self, path):
         """True if this grouped item (or its same-named twin on the other desktop) is still visible
@@ -549,12 +660,34 @@ class Controller:
             g["name"] = name[:60]
             self.commit()
 
+    # ------------------------------------------------------------------ magnetic snapping
+    def snap_on(self):
+        """Snap while dragging: the Settings toggle, and not while Alt is held."""
+        from . import snapping
+        return bool(self.layout.prefs.get("snap_groups", True)) and not snapping.alt_held()
+
+    def snap_targets(self, exclude=None):
+        return [w.glass_rect_global() for gid, w in self.widgets.items() if gid != exclude and w.isVisible()]
+
+    def show_guides(self, lines, widget=None):
+        from . import snapping
+        if not lines:
+            if getattr(self, "_guides", None) is not None:
+                self._guides.clear()
+            return
+        if getattr(self, "_guides", None) is None:
+            self._guides = snapping.GuideOverlay()
+        g = self.layout.group(widget.gid) if widget is not None else None
+        self._guides.show_lines(lines, (g or {}).get("accent") or theme.THEME.get("default_accent"))
+
     def move_group(self, gid, x, y):
+        """Free placement (magnetic snapping already happened while dragging); kept on screen."""
         g = self.layout.group(gid)
         if g is None:
             return
         w, h = group_size(g)
-        pt = snap_rect(x, y, w, h, self.avail(), self.group_rects(exclude=gid))
+        av = self.avail()
+        pt = QPoint(min(max(int(x), av.left()), av.right() - w), min(max(int(y), av.top()), av.bottom() - h))
         if (pt.x(), pt.y()) == (g["x"], g["y"]):
             self.widgets[gid].move(pt)
             return
@@ -1067,6 +1200,94 @@ class Controller:
                 g.pop("name_style", None)
         self.commit()
 
+    NAME_MIN, NAME_MAX = 8, 36
+
+    def _name_burst(self, key, label):
+        """Several quick size clicks / wheel steps = ONE undo step."""
+        t = getattr(self, "_name_burst_timer", None)
+        if t is None:
+            t = self._name_burst_timer = QTimer()
+            t.setSingleShot(True)
+            t.timeout.connect(lambda: setattr(self, "_name_burst_key", None))
+        if getattr(self, "_name_burst_key", None) != key:
+            self.checkpoint(label)
+            self._name_burst_key = key
+            self.update_undo_ui()
+        t.start(1500)
+
+    def bump_name_size(self, gid, delta):
+        """A-/A+ by a group's name, or Ctrl+wheel over it: +-1 pt for this group, live."""
+        g = self.layout.group(gid)
+        w = self.widgets.get(gid)
+        if g is None or w is None:
+            return None
+        new = max(self.NAME_MIN, min(self.NAME_MAX, w.name_size() + int(delta)))
+        if new == (g.get("name_style") or {}).get("size"):
+            return new
+        self._name_burst(("group", gid), "name size")
+        st = dict(g.get("name_style") or {})
+        st["size"] = new
+        g["name_style"] = st
+        w.update()
+        if self.popup.gid == gid:
+            self.popup.update()
+        self.schedule_save()
+        return new
+
+    def default_name_size(self):
+        return int((self.ui.get("name_style") or {}).get("size") or 11)
+
+    def set_default_name_size(self, size):
+        """Gear menu > Name size: the default for every group (a group's own size still wins)."""
+        size = max(self.NAME_MIN, min(self.NAME_MAX, int(size)))
+        st = dict(self.ui.get("name_style") or {})
+        if st.get("size") == size:
+            return
+        self._name_burst(("default",), "name size (all groups)")
+        st["size"] = size
+        self.ui["name_style"] = st
+        for w in self.widgets.values():
+            w.update()
+        self.schedule_save()
+
+    # ------------------------------------------------------------------ quick search shortcut
+    def search_hotkey(self):
+        from . import hotkey
+        hk = self.layout.prefs.get("hotkey")
+        if isinstance(hk, dict) and hk.get("vk") and hk.get("mods"):
+            return {"mods": int(hk["mods"]), "vk": int(hk["vk"]),
+                    "text": hk.get("text") or hotkey.describe(hk["mods"], hk["vk"])}
+        return dict(hotkey.DEFAULT)
+
+    def pause_hotkey(self, paused):
+        """While you record a new shortcut in Settings, the old one is switched off."""
+        from . import hotkey
+        if self.showcase:
+            return
+        hotkey.unregister(int(self.search.winId()))
+        if not paused:
+            self.search.register_hotkey()
+
+    def set_search_hotkey(self, mods, vk, text=None):
+        """Use a new quick-search shortcut right away. Returns (ok, message). If Windows says
+        another app has it, the old shortcut stays."""
+        from . import hotkey
+        new = {"mods": int(mods), "vk": int(vk), "text": text or hotkey.describe(mods, vk)}
+        old = self.search_hotkey()
+        hwnd = int(self.search.winId())
+        hotkey.unregister(hwnd)
+        if hotkey.register(hwnd, new["mods"], new["vk"]):
+            self.layout.prefs["hotkey"] = new
+            self.layout.save()
+            self.search.hotkey_ok = True
+            self.search.update()
+            log.info("Quick search shortcut is now %s", new["text"])
+            return True, f"Done - press {new['text']} anywhere to search."
+        self.search.hotkey_ok = hotkey.register(hwnd, old["mods"], old["vk"])
+        self.search.update()
+        return False, (f"{new['text']} is already used by another app, so I kept {old['text']}. "
+                       "Try another combination.")
+
     # ------------------------------------------------------------------ the gear menu
     def layout_locked(self):
         return bool(self.layout.prefs.get("locked")) and not self.edit_mode
@@ -1136,7 +1357,9 @@ class Controller:
             return
         m = QMenu()
         m.addAction("Open", lambda: self.open_group(gid))
-        m.addAction("Rename...", widget.start_rename)
+        m.addAction("\u270E  Rename", widget.start_rename)          # the same in-place box as the pencil
+        if self.permfix_candidates(gid):
+            m.addAction("\u26A0  Fix hiding permission...", lambda: self.fix_permissions(gid=gid))
         m.addAction("Name style...", lambda: self.name_style_dialog(gid))
         m.addAction("+  Add a tab", lambda: self.add_tab_from_menu(gid, widget))
         if self.edit_mode:
@@ -1388,6 +1611,7 @@ class Controller:
         (e.g. Public Desktop shortcuts after you were given permission)."""
         self.hider.failed.clear()
         statuses, failed = self.sync_hidden()
+        self.commit()
         log.info("Re-hide: %d hidden, %d still could not be hidden",
                  sum(1 for s in statuses.values() if s == "hidden"), len(failed))
         self.write_status()

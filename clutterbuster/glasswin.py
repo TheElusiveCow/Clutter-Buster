@@ -13,6 +13,60 @@ from .theme import THEME, is_dark, rad
 M = 18   # room for the soft shadow
 
 
+_check_png = {}
+
+
+def check_image(color="#FFFFFF"):
+    """A crisp check mark picture for checked boxes (made once, at 4x so it's sharp at any scaling)."""
+    if color in _check_png:
+        return _check_png[color]
+    import os
+    import tempfile
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QImage, QPainterPath, QPen
+    img = QImage(64, 64, QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(color), 9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    path = QPainterPath(QPointF(15, 33))
+    path.lineTo(27, 45)
+    path.lineTo(49, 19)
+    p.drawPath(path)
+    p.end()
+    try:
+        from . import paths
+        d = paths.app_dir()
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = tempfile.gettempdir()
+    fn = os.path.join(d, f"check-{color.strip('#')}.png")
+    img.save(fn)
+    _check_png[color] = fn.replace("\\", "/")
+    return _check_png[color]
+
+
+def checkbox_qss():
+    """Easy-to-see checkboxes in every theme: a bordered box, filled with the accent when ticked,
+    with a white check mark."""
+    acc = THEME["default_accent"]
+    if is_dark():
+        box, line, hov = "rgba(255,255,255,26)", "rgba(255,255,255,170)", "rgba(255,255,255,235)"
+    else:
+        box, line, hov = "#FFFFFF", "rgba(0,0,0,120)", "rgba(0,0,0,200)"
+    img = check_image()
+    return f"""
+    QCheckBox {{ spacing:9px; }}
+    QCheckBox::indicator {{ width:18px; height:18px; border-radius:5px; border:2px solid {line};
+                            background:{box}; }}
+    QCheckBox::indicator:hover {{ border-color:{hov}; }}
+    QCheckBox::indicator:checked {{ background:{acc}; border:2px solid {acc}; image:url({img}); }}
+    QCheckBox::indicator:checked:hover {{ border-color:{hov}; }}
+    QCheckBox::indicator:disabled {{ border-color:gray; background:transparent; }}
+    QCheckBox::indicator:checked:disabled {{ background:gray; border-color:gray; }}
+    """
+
+
 def qss():
     """Qt style sheet for buttons, sliders, lists... matching the current theme."""
     acc = THEME["default_accent"]
@@ -49,10 +103,14 @@ def qss():
     QListWidget::item:selected {{ background:{sel}; color:{text}; }}
     QListWidget::item:hover {{ background:{sel}; }}
     QLineEdit {{ background:{field}; border:1px solid {border}; border-radius:7px; padding:5px 8px; }}
-    QCheckBox {{ spacing:8px; }}
+    QScrollArea#page {{ background:transparent; border:none; }}
+    QScrollArea#page > QWidget > QWidget {{ background:transparent; }}
+    QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
+    QScrollBar::handle:vertical {{ background:{border}; border-radius:4px; min-height:30px; }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
     QFrame#card {{ background:{sel}; border-radius:12px; }}
     QToolTip {{ color:black; background:white; }}
-    """
+    """ + checkbox_qss()
 
 
 class GlassPanel(QWidget):

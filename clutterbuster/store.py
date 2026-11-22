@@ -180,7 +180,8 @@ class Layout:
         """Settings that are not part of Undo: theme choice, dock auto-hide, sounds."""
         p = self.extra.setdefault("prefs", {})
         for k, v in (("theme", "auto"), ("dock_autohide", False), ("sounds", True), ("volume", 50),
-                     ("locked", False), ("groups_hidden", False)):
+                     ("locked", False), ("groups_hidden", False), ("auto_fix_perms", True),
+                     ("panel_labels", "auto"), ("snap_groups", True)):
             p.setdefault(k, v)
         if not p.get("dock_v5"):
             # v0.5: the dock stays visible now (Brian asked). Auto-hide is still in Settings > Dock.

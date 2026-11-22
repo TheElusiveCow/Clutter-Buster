@@ -12,15 +12,15 @@ Hovering only highlights / shows labels - it NEVER opens a group.
 import math
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from . import icons, namestyle, tabs as tabsmod
-from .store import current_tab, tab_indices
+from . import icons, namestyle, snapping, tabs as tabsmod
+from .store import current_tab, tab_indices, tab_of
 from PySide6.QtCore import QTimer as QTimerS
 from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_edit_outline, draw_glass,
                     draw_neon, draw_shadow, draw_warn, read_item)
-from .theme import THEME, accent_color, qcolor, rad
+from .theme import THEME, accent_color, is_dark, qcolor, rad
 
 DRAG_THRESHOLD = 6
 EDGE = 16          # resize zone along every edge (logical px - Windows scales it, ~24 px at 150%)
@@ -79,6 +79,8 @@ class GroupWidget(DesktopLayerWindow):
         self.editor = None
         self.tab_editor = None
         self._hover_tab = None
+        self._hover_pencil = False
+        self._hover_button = None
         self._drop_tab = None
         self._selected = None       # list view: clicked row (double-click opens)
         self._last_tab = None
@@ -99,13 +101,64 @@ class GroupWidget(DesktopLayerWindow):
     def glass_rect(self):
         """Tile mode: the frosted square. Panel mode: the whole panel."""
         if self.mode == "tile":
-            s = max(24.0, min(self.width() - 20.0, self.height() - float(LBL)))
+            s = max(24.0, min(self.width() - 20.0, self.height() - float(self.label_h())))
             return QRectF((self.width() - s) / 2, 10, s, s)
         return QRectF(6, 9, self.width() - 12, self.height() - 15)
 
     def glass_rect_global(self):
         r = self.glass_rect().toRect()
         return QRect(self.mapToGlobal(r.topLeft()), r.size())
+
+    def name_font(self):
+        g = self.group
+        st = namestyle.resolve(self.c.layout, g)
+        if self.mode == "tile":
+            return namestyle.font(self.font(), st, TILE_PT, False)
+        return namestyle.font(self.font(), st, PANEL_PT, True)
+
+    def name_size(self):
+        """The name's current size in points (its own, else the default, else the theme's)."""
+        return round(self.name_font().pointSizeF())
+
+    def label_h(self):
+        """Room under a small tile for its name - grows with bigger name sizes."""
+        return max(LBL, QFontMetrics(self.name_font()).height() + 12)
+
+    def name_buttons(self):
+        """On hover: [A-] [A+] [pencil]. Panels: right after the name. Tiles: a little pill on the
+        top edge of the square (there's no room beside a tile's name)."""
+        g = self.group
+        if g is None:
+            return {}
+        r = self.glass_rect()
+        sz = 18
+        if self.mode == "tile":
+            x0 = r.center().x() - 1.5 * sz - 2
+            y = r.top() + 3
+        else:
+            tw = QFontMetrics(self.name_font()).horizontalAdvance(g["name"])
+            x0 = min(r.left() + 30 + tw + 8, self.name_right() - 3 * sz - 8)
+            y = r.top() + (TITLE_H - sz) / 2 + 1
+        return {k: QRectF(x0 + i * (sz + 2), y, sz, sz) for i, k in enumerate(("smaller", "bigger", "pencil"))}
+
+    def pencil_rect(self):
+        return self.name_buttons().get("pencil")
+
+    def button_at(self, pos):
+        if not self._hover:
+            return None
+        if self.grip_rect().contains(QPointF(pos)):
+            return None
+        for k, br in self.name_buttons().items():
+            if br.adjusted(-2, -2, 2, 2).contains(QPointF(pos)):
+                return k
+        return None
+
+    def name_right(self):
+        g = self.group
+        segs, _t, plus = self.tab_bar()
+        badge_w = 30 if g and g.get("badge") else 0
+        return (plus.left() - 6) if (plus is not None and not segs) else (self.menu_rect().left() - 4 - badge_w)
 
     def labels_visible(self):
         return self.glass_rect().width() >= 56 or self._hover
@@ -210,7 +263,10 @@ class GroupWidget(DesktopLayerWindow):
         return edges_for(pos.x(), pos.y(), self.width(), self.height())
 
     def hit(self, pos):
-        """(kind, edges) for a point: resize beats everything else."""
+        """(kind, edges) for a point: the hover buttons by the name, then resize, then the rest."""
+        nb = self.button_at(pos)
+        if nb is not None:
+            return nb, 0
         e = 0 if self.c.layout_locked() else self.edges_at(pos)
         if e:
             return "resize", e
@@ -225,6 +281,9 @@ class GroupWidget(DesktopLayerWindow):
             if self.title_rect().contains(pos):
                 return "title", 0
             return "move", 0
+        t = self.tile_tab_at(pos)
+        if t is not None:
+            return "tab:" + t, 0          # switch the tile's tab in place (doesn't open the popup)
         return "tile", 0
 
     def grip_rect(self):
@@ -267,6 +326,14 @@ class GroupWidget(DesktopLayerWindow):
         if n_fail and self.mode == "tile":
             draw_warn(p, QPointF(r.left() + 4, r.top() + 4), 8)
 
+    def paint_name_buttons(self, p):
+        for k, br in self.name_buttons().items():
+            hot = self._hover_button == k
+            if k == "pencil":
+                draw_pencil(p, br, hot)
+            else:
+                draw_size_button(p, br, k == "bigger", hot)
+
     def paint_warn(self, p, it, icon_r):
         """Small orange '!' on an item that couldn't be hidden (it's also still on the desktop)."""
         if self.c.hide_failed(it["path"]):
@@ -296,9 +363,103 @@ class GroupWidget(DesktopLayerWindow):
             p.drawLine(QPointF(x2 - n, y2), QPointF(x2, y2 - n))
         p.restore()
 
-    def _paint_tile(self, p, g):
+    def tile_preview_rects(self):
+        """[(item index, rect)] of the mini icons inside a small tile (first tab, Icons per row)."""
+        g = self.group
+        if g is None or self.mode != "tile":
+            return []
         r = self.glass_rect()
         s = r.width()
+        pad = s * 0.13
+        n = max(2, min(6, int(THEME.get("per_row", 3))))      # follows "Icons per row"
+        strip = self.tile_strip_area()
+        avail_h = (strip.top() - 2 - (r.y() + pad)) if strip is not None else s - 2 * pad
+        cell = min((s - 2 * pad) / n, avail_h / n)
+        isz = cell * 0.84
+        x0 = r.x() + (s - n * cell) / 2
+        shown = tab_indices(g) if g.get("tabs") else list(range(len(g["items"])))   # the selected tab
+        out = []
+        for i, idx in enumerate(shown[:n * n]):
+            row, col = divmod(i, n)
+            out.append((idx, QRectF(x0 + col * cell + (cell - isz) / 2,
+                                    r.y() + pad + row * cell + (cell - isz) / 2, isz, isz)))
+        return out
+
+    # ---- small tiles with 2+ tabs: a strip of little pills (or dots) to switch tabs in place
+    def tile_strip_area(self):
+        if self.mode != "tile" or not self.multi_tab():
+            return None
+        r = self.glass_rect()
+        h = max(13.0, min(20.0, r.width() * 0.13))
+        return QRectF(r.x() + 6, r.bottom() - h - 6, r.width() - 12, h)
+
+    def tile_strip(self):
+        """[(tab id, rect, label or None)] - names when they fit, else dots."""
+        area = self.tile_strip_area()
+        if area is None:
+            return []
+        tabs = self.group["tabs"]
+        n = len(tabs)
+        f = self.strip_font()
+        fm = QFontMetrics(f)
+        gap = 3.0
+        w = (area.width() - gap * (n - 1)) / n
+        names = [t.get("name") or "Tab" for t in tabs]
+        if all(fm.horizontalAdvance(nm) + 6 <= w for nm in names):     # every name fits: little pills
+            return [(t["id"], QRectF(area.x() + i * (w + gap), area.y(), w, area.height()), names[i])
+                    for i, t in enumerate(tabs)]
+        d = min(area.height(), 12.0)
+        step = min(d + 6, area.width() / n)
+        x0 = area.center().x() - step * n / 2
+        return [(t["id"], QRectF(x0 + i * step + (step - d) / 2, area.center().y() - d / 2, d, d), None)
+                for i, t in enumerate(tabs)]
+
+    def strip_font(self):
+        f = QFont(self.font())
+        f.setPointSizeF(7.5)
+        f.setWeight(QFont.DemiBold)
+        return f
+
+    def tile_tab_at(self, pos):
+        for tid, rr, _lbl in self.tile_strip():
+            if rr.adjusted(-2, -3, 2, 3).contains(QPointF(pos)):
+                return tid
+        return None
+
+    def paint_tile_strip(self, p, acc):
+        strip = self.tile_strip()
+        if not strip:
+            return
+        g = self.group
+        cur = g.get("tab")
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setFont(self.strip_font())
+        dark = is_dark()
+        for tid, rr, lbl in strip:
+            sel = tid == cur
+            hov = tid == getattr(self, "_hover_tab", None)
+            rad_ = rr.height() / 2
+            if sel:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(acc))
+            else:
+                p.setPen(QPen(QColor(255, 255, 255, 70) if dark else QColor(0, 0, 0, 45), 1))
+                p.setBrush(QColor(255, 255, 255, 40 if hov else 18) if dark else QColor(0, 0, 0, 26 if hov else 12))
+            p.drawRoundedRect(rr, rad_, rad_)
+            if lbl:
+                p.setPen(QColor(255, 255, 255) if sel else qcolor("panel_subtext"))
+                p.drawText(rr, Qt.AlignCenter, lbl)
+        p.restore()
+
+    def tile_item_at(self, pos):
+        for idx, ir in self.tile_preview_rects():
+            if ir.adjusted(-2, -2, 2, 2).contains(QPointF(pos)):
+                return idx
+        return None
+
+    def _paint_tile(self, p, g):
+        r = self.glass_rect()
         rr = self.radius()
         acc = accent_color(g)
         draw_shadow(p, r, rr, 0.9)
@@ -309,22 +470,17 @@ class GroupWidget(DesktopLayerWindow):
             p.setPen(QPen(ring, 1.6))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rr - 1, rr - 1)
-        pad = s * 0.13
-        n = max(2, min(6, int(THEME.get("per_row", 3))))      # follows "Icons per row"
-        cell = (s - 2 * pad) / n
-        isz = cell * 0.84
-        first = tab_indices(g, g["tabs"][0]["id"]) if g.get("tabs") else list(range(len(g["items"])))
-        for i, it in enumerate([g["items"][k] for k in first][:n * n]):
-            row, col = divmod(i, n)
-            x = r.x() + pad + col * cell + (cell - isz) / 2
-            y = r.y() + pad + row * cell + (cell - isz) / 2
-            icons.icon_for(it["path"]).paint(p, QRect(round(x), round(y), round(isz), round(isz)))
+        for idx, ir in self.tile_preview_rects():
+            icons.icon_for(g["items"][idx]["path"]).paint(p, ir.toRect())
+        self.paint_tile_strip(p, acc)
         if self.labels_visible() and not (self.editor and self.editor.isVisible()):
             st = namestyle.resolve(self.c.layout, g)
             f = namestyle.font(self.font(), st, TILE_PT, False)
             lr = QRectF(0, r.bottom() + 4, self.width(), QFontMetrics(f).height() + 4)
             namestyle.draw(p, lr, g["name"], Qt.AlignHCenter | Qt.AlignTop, st, self.font(), TILE_PT, False,
                            "label_text", default_effect="shadow", elide_w=self.width() - 4)
+            if self._hover:
+                self.paint_name_buttons(p)
 
     def _paint_panel(self, p, g):
         r = self.glass_rect()
@@ -343,7 +499,9 @@ class GroupWidget(DesktopLayerWindow):
             st = namestyle.resolve(self.c.layout, g)
             namestyle.draw(p, QRectF(r.left() + 30, r.top(), name_right - r.left() - 30, TITLE_H + 2),
                            g["name"], Qt.AlignLeft | Qt.AlignVCenter, st, self.font(), PANEL_PT, True,
-                           "panel_title_text", elide_w=name_right - r.left() - 32)
+                           "panel_title_text", elide_w=name_right - r.left() - 32 - 24)
+            if self._hover:
+                self.paint_name_buttons(p)
         p.setPen(qcolor("hint_text"))
         p.setFont(QFont(self.font()))
         p.drawText(mr, Qt.AlignCenter, "\u2022\u2022\u2022")
@@ -363,11 +521,11 @@ class GroupWidget(DesktopLayerWindow):
             nf = QFont(self.font())
             nfm = QFontMetrics(nf)
         else:
-            show_labels = cell >= 64
             nf = QFont(self.font())
             nf.setPointSizeF(8.5)
             p.setFont(nf)
             nfm = QFontMetrics(nf)
+            show_labels = labels_fit(cell, nfm.height(), self.c.layout.prefs.get("panel_labels", "auto"))
             for idx, ir in self.panel_item_rects():
                 it = g["items"][idx]
                 card = ir.adjusted(4, 4, -4, -4)
@@ -376,8 +534,9 @@ class GroupWidget(DesktopLayerWindow):
                 p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
                 p.drawRoundedRect(card, rad(max(6, cell * 0.16)), rad(max(6, cell * 0.16)))
                 if show_labels:
-                    isz = cell * 0.46
-                    icon_r = QRectF(card.center().x() - isz / 2, card.top() + card.height() * 0.12, isz, isz)
+                    # icon on top, room for two lines of name under it
+                    isz = max(14.0, min(cell * 0.5, card.height() - 2 * nfm.height() - 12))
+                    icon_r = QRectF(card.center().x() - isz / 2, card.top() + 5, isz, isz)
                 else:
                     isz = cell * 0.6
                     icon_r = QRectF(card.center().x() - isz / 2, card.center().y() - isz / 2, isz, isz)
@@ -385,9 +544,13 @@ class GroupWidget(DesktopLayerWindow):
                 self.paint_warn(p, it, icon_r)
                 if show_labels:
                     p.setPen(qcolor("panel_text"))
-                    t = nfm.elidedText(icons.item_name(it), Qt.ElideRight, int(card.width() - 8))
-                    p.drawText(QRectF(card.left() + 2, icon_r.bottom() + 3, card.width() - 4, nfm.height() + 2),
-                               Qt.AlignHCenter | Qt.AlignTop, t)
+                    y = icon_r.bottom() + 3
+                    for line in two_lines(nfm, icons.item_name(it), card.width() - 6):
+                        if y + nfm.height() > card.bottom() + 3:
+                            break
+                        p.drawText(QRectF(card.left() + 2, y, card.width() - 4, nfm.height() + 1),
+                                   Qt.AlignHCenter | Qt.AlignTop, line)
+                        y += nfm.height()
         if not vis:
             p.setPen(qcolor("hint_text"))
             p.setFont(QFont(self.font()))
@@ -457,7 +620,8 @@ class GroupWidget(DesktopLayerWindow):
         self._press_geom = self.geometry()
         self._active = False
         self._press_kind, self._edges = self.hit(pos)
-        self._press_item = self.item_at(pos) if self._press_kind == "item" else None
+        self._press_item = (self.item_at(pos) if self._press_kind == "item" else
+                            self.tile_item_at(pos) if self._press_kind == "tile" else None)
 
     def mouseMoveEvent(self, e):
         pos = e.position()
@@ -465,12 +629,28 @@ class GroupWidget(DesktopLayerWindow):
             kind_, edges_ = self.hit(pos)
             cur = self._cursor_for(edges_)
             ht = kind_[4:] if kind_.startswith("tab:") else ("+" if kind_ == "plus" else None)
+            hb = kind_ if kind_ in ("smaller", "bigger", "pencil") else None
+            hp = hb is not None
+            if hb != self._hover_button:
+                self._hover_button = hb
+                self._hover_pencil = hb == "pencil"
+                tips = {"pencil": "Rename (or double-click the name)",
+                        "smaller": f"Smaller name ({self.name_size()} pt) - or Ctrl + mouse wheel over the name",
+                        "bigger": f"Bigger name ({self.name_size()} pt) - or Ctrl + mouse wheel over the name"}
+                self.setToolTip(tips.get(hb, ""))
+            if self.mode == "tile" and ht != getattr(self, "_strip_tip", None):
+                self._strip_tip = ht
+                tb = tab_of(self.group, ht) if ht and self.group else None
+                self.setToolTip(f"Show tab: {tb.get('name') or 'Tab'}" if tb else "")
+                self.update()
             if ht != self._hover_tab:
                 self._hover_tab = ht
                 self.setToolTip("Add a tab" if ht == "+" else "")
                 self.update()
             if cur is not None:
                 self.setCursor(cur)
+            elif hp:
+                self.setCursor(Qt.PointingHandCursor)
             elif self.c.edit_mode:
                 self.setCursor(Qt.SizeAllCursor)
             else:
@@ -478,12 +658,19 @@ class GroupWidget(DesktopLayerWindow):
             hv = self.item_at(pos)
             if hv != self._hover_item:
                 self._hover_item = hv
+                g = self.group
+                if self.mode == "panel" and g and hv is not None and hv < len(g["items"]):
+                    self.setToolTip(icons.item_name(g["items"][hv]))     # the full name
+                elif ht is None:
+                    self.setToolTip("")
                 self.update()
             return
         delta = e.globalPosition().toPoint() - self._press
         if not self._active and delta.manhattanLength() >= DRAG_THRESHOLD:
             self._active = True
-            if self._press_kind == "item":
+            if self._press_kind == "item" or (self._press_kind == "tile" and self._press_item is not None):
+                # an icon (big panel grid or a small tile's mini preview) dragged straight out:
+                # onto the desktop = shown again, onto another group = moved there
                 g = self.group
                 if g and self._press_item is not None and self._press_item < len(g["items"]):
                     path = g["items"][self._press_item]["path"]
@@ -496,10 +683,27 @@ class GroupWidget(DesktopLayerWindow):
         if self._press_kind == "resize":
             self._do_resize(delta)
         elif self._press_kind in ("move", "title", "tile") and not self.c.layout_locked():
-            self.move(self._press_geom.topLeft() + delta)
+            pos_ = self._press_geom.topLeft() + delta
+            guides = []
+            if self.c.snap_on():
+                gr = QRectF(self.glass_rect()).translated(pos_.x(), pos_.y())
+                dx, dy, guides = snapping.magnetic(gr, self.c.snap_targets(self.gid), self.c.avail())
+                pos_ = QPoint(round(pos_.x() + dx), round(pos_.y() + dy))
+            self.move(pos_)
+            self.c.show_guides(guides, self)
 
     def _do_resize(self, d):
-        self.setGeometry(resize_rect(self._press_geom, d, self._edges, self.mode))
+        rect = resize_rect(self._press_geom, d, self._edges, self.mode)
+        guides = []
+        if self.mode == "panel" and self.c.snap_on():
+            # snap the glass edges being dragged (the window has a small shadow margin around it)
+            gl = QRectF(rect).adjusted(6, 9, -6, -6)
+            gl, guides = snapping.magnetic_edges(gl, self._edges, self.c.snap_targets(self.gid), self.c.avail())
+            cand = snapping.to_rect(gl.adjusted(-6, -9, 6, 6))
+            if cand.width() >= PANEL_MIN[0] and cand.height() >= PANEL_MIN[1]:
+                rect = cand
+        self.setGeometry(rect)
+        self.c.show_guides(guides, self)
         self.update()
 
     def mouseReleaseEvent(self, e):
@@ -508,13 +712,19 @@ class GroupWidget(DesktopLayerWindow):
         kind, active = self._press_kind, self._active
         self._press = None
         self._active = False
+        self.c.show_guides([], self)
         if active and kind == "resize":
             gm = self.geometry()
             self.c.resize_group(self.gid, gm.x(), gm.y(), gm.width(), gm.height())
         elif active and kind in ("move", "title", "tile") and not self.c.layout_locked():
             self.c.move_group(self.gid, self.x(), self.y())
         elif not active:
-            if kind in ("tile", "title") and self.on_name(e.position()):
+            if kind == "pencil":
+                self.start_rename()
+            elif kind in ("smaller", "bigger"):
+                self.c.bump_name_size(self.gid, 1 if kind == "bigger" else -1)
+                self.setToolTip(f"Name size: {self.name_size()} pt")
+            elif kind in ("tile", "title") and self.on_name(e.position()):
                 # the name: wait a moment - a double-click renames instead of opening
                 self._open_timer.start(QApplication.doubleClickInterval())
             elif kind == "tile":
@@ -560,6 +770,15 @@ class GroupWidget(DesktopLayerWindow):
             self.c.launch(g["items"][idx]["path"])
 
     def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier and (self.on_name(e.position()) or self.button_at(e.position())):
+            dy = e.angleDelta().y()
+            if dy:
+                self.c.bump_name_size(self.gid, 1 if dy > 0 else -1)     # Ctrl + wheel over the name
+            e.accept()
+            return
+        self._wheel_page(e)
+
+    def _wheel_page(self, e):
         if self.mode != "panel":
             return
         pages = self.panel_layout()[4]
@@ -631,9 +850,7 @@ class GroupWidget(DesktopLayerWindow):
         if self.editor is None:
             self.editor = QLineEdit(self)
             self.editor.setAlignment(Qt.AlignCenter)
-            self.editor.setStyleSheet(
-                "QLineEdit{background:rgba(255,255,255,240);color:#1c1c22;border:1px solid #0A84FF;"
-                "border-radius:6px;padding:1px 3px;}")
+            self.editor.setStyleSheet(rename_qss())
             self.editor.editingFinished.connect(self._finish_rename)
             self.editor.installEventFilter(self)
         r = self.glass_rect()
@@ -645,6 +862,7 @@ class GroupWidget(DesktopLayerWindow):
             self.editor.setGeometry(1, int(r.bottom() + 3), self.width() - 2, eh)
         else:
             self.editor.setGeometry(int(r.left() + 26), int(r.top() + (TITLE_H - eh) / 2 + 1), int(r.width() - 70), eh)
+        self.editor.setStyleSheet(rename_qss())
         self.editor.setText(g["name"])
         self.editor.selectAll()
         self.editor.show()
@@ -706,6 +924,87 @@ class GroupWidget(DesktopLayerWindow):
             self.update()
             return True
         return super().eventFilter(obj, ev)
+
+
+def rename_qss():
+    """The in-place rename box: frosted glass in the theme's colours, accent outline."""
+    from .theme import THEME, is_dark
+    acc = THEME.get("default_accent", "#0A84FF")
+    if is_dark():
+        return (f"QLineEdit{{background:rgba(28,30,48,235);color:#F2F4FF;border:1.5px solid {acc};"
+                f"border-radius:9px;padding:2px 8px;selection-background-color:{acc};}}")
+    return (f"QLineEdit{{background:rgba(255,255,255,238);color:#1C1C22;border:1.5px solid {acc};"
+            f"border-radius:9px;padding:2px 8px;selection-background-color:{acc};selection-color:white;}}")
+
+
+def draw_size_button(p, r, bigger, hot=False):
+    """A small round glass button with 'A-' or 'A+'."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(qcolor("card_border"), 1))
+    p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
+    p.drawEllipse(r)
+    f = QFont()
+    f.setPixelSize(int(r.height() * (0.62 if bigger else 0.5)))
+    f.setBold(True)
+    p.setFont(f)
+    p.setPen(qcolor("panel_text"))
+    p.drawText(r.adjusted(-1, 0, -4, 0), Qt.AlignCenter, "A")
+    p.drawText(r.adjusted(r.width() * 0.52, -r.height() * 0.18, 0, 0), Qt.AlignLeft | Qt.AlignVCenter,
+               "+" if bigger else "\u2212")
+    p.restore()
+
+
+def draw_pencil(p, r, hot=False):
+    """A small round glass button with a pencil in it."""
+    if r is None:
+        return
+    from PySide6.QtGui import QPolygonF
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(qcolor("card_border"), 1))
+    p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
+    p.drawEllipse(r)
+    c = r.center()
+    k = r.width() / 17.0
+    col = qcolor("panel_text")
+    p.setPen(QPen(col, 1.1))
+    p.setBrush(col)
+    body = QPolygonF([QPointF(c.x() - 4.2 * k, c.y() + 2.6 * k), QPointF(c.x() + 2.6 * k, c.y() - 4.2 * k),
+                      QPointF(c.x() + 4.2 * k, c.y() - 2.6 * k), QPointF(c.x() - 2.6 * k, c.y() + 4.2 * k)])
+    p.drawPolygon(body)
+    tip = QPolygonF([QPointF(c.x() - 4.2 * k, c.y() + 2.6 * k), QPointF(c.x() - 2.6 * k, c.y() + 4.2 * k),
+                     QPointF(c.x() - 5.0 * k, c.y() + 5.0 * k)])
+    p.drawPolygon(tip)
+    p.restore()
+
+
+def labels_fit(cell, line_h, mode="auto"):
+    """Names under big-panel icons: Always / Never / Auto = when a cell fits an icon + ~2 lines."""
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return cell - 8 >= 22 + 2 * line_h + 12
+
+
+def two_lines(fm, text, width):
+    """Wrap a name onto at most two lines; the second ends with '…' if it's still too long."""
+    width = int(max(10, width))
+    if fm.horizontalAdvance(text) <= width:
+        return [text]
+    words, first = text.split(" "), ""
+    for i in range(len(words), 0, -1):
+        cand = " ".join(words[:i])
+        if fm.horizontalAdvance(cand) <= width:
+            first, rest = cand, " ".join(words[i:])
+            break
+    else:                                   # one long word: cut it by letters
+        n = len(text)
+        while n > 1 and fm.horizontalAdvance(text[:n]) > width:
+            n -= 1
+        first, rest = text[:n], text[n:]
+    return [first, fm.elidedText(rest.strip(), Qt.ElideRight, width)] if rest.strip() else [first]
 
 
 def edges_for(x, y, w, h):

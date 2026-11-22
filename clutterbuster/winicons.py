@@ -209,3 +209,72 @@ def resolve(path):
     except Exception:
         log.exception("Icon lookup failed for %s", path)
     return None, "none"
+
+
+# ------------------------------------------------------------------ picture / video thumbnails
+class _SIZE(ctypes.Structure):
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _BITMAP(ctypes.Structure):
+    _fields_ = [("bmType", ctypes.c_long), ("bmWidth", ctypes.c_long), ("bmHeight", ctypes.c_long),
+                ("bmWidthBytes", ctypes.c_long), ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                ("bmBits", ctypes.c_void_p)]
+
+
+IID_IShellItemImageFactory = GUID(0xBCC18B79, 0xBA16, 0x442F,
+                                  (ctypes.c_ubyte * 8)(0x80, 0xC4, 0x8A, 0x59, 0xC3, 0x0C, 0x46, 0x3B))
+SIIGBF_THUMBNAILONLY = 0x08
+_shell32.SHCreateItemFromParsingName.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(GUID),
+                                                 ctypes.POINTER(ctypes.c_void_p)]
+_shell32.SHCreateItemFromParsingName.restype = ctypes.c_long
+_gdi32.GetObjectW.argtypes = [wintypes.HGDIOBJ, ctypes.c_int, ctypes.c_void_p]
+_gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                             ctypes.c_void_p, wintypes.UINT]
+_GetImage = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, _SIZE, ctypes.c_int, ctypes.POINTER(wintypes.HBITMAP))
+_Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
+
+
+def _hbitmap_to_image(hbm):
+    bm = _BITMAP()
+    if not _gdi32.GetObjectW(hbm, ctypes.sizeof(bm), ctypes.byref(bm)) or bm.bmWidth <= 0:
+        return None
+    w, h = bm.bmWidth, abs(bm.bmHeight)
+    bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(w * h * 4)
+    hdc = _gdi32.CreateCompatibleDC(None)
+    got = _gdi32.GetDIBits(hdc, hbm, 0, h, buf, ctypes.byref(bmi), 0)
+    _gdi32.DeleteDC(hdc)
+    if not got:
+        return None
+    raw = buf.raw
+    fmt = QImage.Format_ARGB32_Premultiplied if any(raw[3::4]) else QImage.Format_RGB32
+    return QImage(raw, w, h, w * 4, fmt).copy()
+
+
+def shell_thumbnail(path, size=256):
+    """Explorer's own thumbnail for a picture or video (works for hidden files too). Any thread.
+    Returns a QImage or None (then the caller falls back to loading the picture / the type icon)."""
+    try:
+        _ole32.CoInitializeEx(None, 2)
+    except Exception:
+        pass
+    ptr = ctypes.c_void_p()
+    hr = _shell32.SHCreateItemFromParsingName(path, None, ctypes.byref(IID_IShellItemImageFactory), ctypes.byref(ptr))
+    if hr != 0 or not ptr.value:
+        return None
+    vtbl = ctypes.cast(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    try:
+        hbm = wintypes.HBITMAP()
+        hr = _GetImage(vtbl[3])(ptr, _SIZE(size, size), SIIGBF_THUMBNAILONLY, ctypes.byref(hbm))
+        if hr != 0 or not hbm.value:
+            return None
+        try:
+            return _hbitmap_to_image(hbm)
+        finally:
+            _gdi32.DeleteObject(hbm)
+    except Exception:
+        log.debug("thumbnail failed for %s", path, exc_info=True)
+        return None
+    finally:
+        _Release(vtbl[2])(ptr)

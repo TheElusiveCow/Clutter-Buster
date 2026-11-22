@@ -88,6 +88,10 @@ class QuickMenu(GlassPanel):
                                self.c.ui.get("transparency", 35))
         self.trans.changed.connect(lambda k, v: self.c.set_ui(k, v))
         lay.addWidget(self.trans)
+        self.name_size = SliderRow("name_size", "Name size (all groups)", 8, 36, " pt", self.c.default_name_size())
+        self.name_size.setToolTip("Hover a group's name for A- / A+ to change just that group")
+        self.name_size.changed.connect(lambda k, v: self.c.set_default_name_size(v))
+        lay.addWidget(self.name_size)
         tidy = _btn("\u25A6  Tidy up (snap all groups to the grid)", "One Undo puts them back")
         tidy.clicked.connect(lambda: (self.c.tidy_up(), self.refresh()))
         lay.addWidget(tidy)
@@ -133,11 +137,7 @@ class QuickMenu(GlassPanel):
 
     def restyle(self):
         acc = THEME["default_accent"]
-        line = "rgba(255,255,255,120)" if theme.is_dark() else "rgba(0,0,0,90)"
-        self.setStyleSheet(qss() + "QPushButton:checked{border:2px solid %s;}"
-                           "QCheckBox::indicator{width:16px;height:16px;border-radius:5px;border:1.5px solid %s;"
-                           "background:transparent;}"
-                           "QCheckBox::indicator:checked{background:%s;border-color:%s;}" % (acc, line, acc, acc))
+        self.setStyleSheet(qss() + "QPushButton:checked{border:2px solid %s;}" % acc)
         self.update()
 
     def refresh(self):
@@ -153,6 +153,7 @@ class QuickMenu(GlassPanel):
         self.vol.setEnabled(bool(prefs.get("sounds", True)))
         self.vol.set_value(prefs.get("volume", 50))
         self.trans.set_value(self.c.ui.get("transparency", 35))
+        self.name_size.set_value(self.c.default_name_size())
         self.undo_b.setEnabled(self.c.undo_stack.can_undo() or self.c.edit_mode)
         self.undo_b.setToolTip("Undo " + self.c.undo_stack.next_label() + " (Ctrl+Z)"
                                if self.c.undo_stack.can_undo() else "Nothing to undo")
