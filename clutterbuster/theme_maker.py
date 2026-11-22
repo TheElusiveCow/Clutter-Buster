@@ -6,11 +6,12 @@ with a name. Saved themes show up in the theme list.
 """
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QRadialGradient
-from PySide6.QtWidgets import (QColorDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QVBoxLayout, QWidget)
 
 from . import theme
-from .glass import draw_glass, draw_neon, draw_shadow
+from .colorpick import InlineColorPicker
+from .glass import draw_glass, draw_neon, draw_shadow, info
 from .glasswin import GlassPanel, SliderRow, color_button, set_button_color
 from .theme import THEME, qcolor, rad
 
@@ -145,10 +146,11 @@ class ThemeMaker(GlassPanel):
     def __init__(self, controller, start=None, parent=None):
         super().__init__("Clutter Buster - Make a theme", parent=parent)
         self.c = controller
+        self.original = dict(start) if start else None
         self.data = dict(DEFAULT_CUSTOM)
         if start:
             self.data.update(start)
-        self.setFixedSize(820, 560)
+        self.setFixedSize(880, 640)
         outer = QVBoxLayout(self.body)
         outer.setContentsMargins(18, 10, 18, 14)
         outer.setSpacing(10)
@@ -165,13 +167,22 @@ class ThemeMaker(GlassPanel):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(8)
         self.colors = {}
+        self.color_key = "accent"
         for i, (key, label) in enumerate((("accent", "Accent"), ("tint", "Glass tint"), ("text", "Text"))):
-            grid.addWidget(QLabel(label), i, 0)
+            grid.addWidget(QLabel(label), 0, 2 * i)
             b = color_button(self.data[key])
+            b.setToolTip(f"Change the {label.lower()} colour below")
             b.clicked.connect(lambda _=False, k=key: self.pick(k))
-            grid.addWidget(b, i, 1)
+            grid.addWidget(b, 0, 2 * i + 1)
             self.colors[key] = b
         left.addLayout(grid)
+        # the colour picker is part of this window (a separate dialog could hide behind it)
+        self.picker_label = QLabel()
+        self.picker_label.setObjectName("hint")
+        left.addWidget(self.picker_label)
+        self.picker = InlineColorPicker(self.data["accent"])
+        self.picker.changed.connect(self.on_color)
+        left.addWidget(self.picker)
         left.addSpacing(4)
         self.sliders = {}
         for key, label in (("blur", "Frost (blur)"), ("glow", "Glow"), ("roundness", "Corner roundness")):
@@ -187,6 +198,10 @@ class ThemeMaker(GlassPanel):
         self.name.setPlaceholderText("e.g. Purple Night")
         self.name.setMaxLength(40)
         left.addWidget(self.name)
+        self._preview_cache = None
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self.changed)
         self.preview = ThemePreview(self.preview_theme)
         row.addWidget(self.preview, 1)
         bottom = QHBoxLayout()
@@ -194,6 +209,13 @@ class ThemeMaker(GlassPanel):
         hint.setObjectName("hint")
         bottom.addWidget(hint)
         bottom.addStretch(1)
+        self.delete_btn = None
+        if start and any(t.get("name") == start.get("name") for t in self.c.layout.custom_themes):
+            self.delete_btn = QPushButton("Delete theme")
+            self.delete_btn.setObjectName("danger")
+            self.delete_btn.setCursor(Qt.PointingHandCursor)
+            self.delete_btn.clicked.connect(self.delete_theme)
+            bottom.addWidget(self.delete_btn)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.close)
         bottom.addWidget(cancel)
@@ -203,35 +225,55 @@ class ThemeMaker(GlassPanel):
         save.clicked.connect(self.save)
         bottom.addWidget(save)
         outer.addLayout(bottom)
+        self.pick("accent")
 
     def preview_theme(self):
-        d = dict(self.data)
-        d["name"] = self.name.text().strip() or "Preview"
-        return theme.build("__preview__", self.c.ui, [dict(d, name="__preview__")])
+        if getattr(self, "_preview_cache", None) is None:      # built once per change, not per frame
+            d = dict(self.data)
+            self._preview_cache = theme.build("__preview__", self.c.ui, [dict(d, name="__preview__")])
+        return self._preview_cache
 
     def pick(self, key):
-        c = QColorDialog.getColor(QColor(self.data[key]), self, "Pick a color")
-        if c.isValid():
-            self.data[key] = c.name()
-            set_button_color(self.colors[key], c.name())
-            self.preview.update()
+        """Choose which colour the picker below changes."""
+        self.color_key = key
+        names = {"accent": "Accent", "tint": "Glass tint", "text": "Text"}
+        self.picker_label.setText(f"Changing: {names[key]}")
+        for k, b in self.colors.items():
+            ring = ("3px solid " + THEME["default_accent"]) if k == key else "1px solid rgba(0,0,0,60)"
+            b.setStyleSheet(f"QPushButton#swatch{{background:{self.data[k]};border:{ring};}}")
+        self.picker.set_color(self.data[key])
+
+    def on_color(self, hx):
+        self.data[self.color_key] = hx
+        set_button_color(self.colors[self.color_key], hx)
+        self.pick(self.color_key)
+        self._debounce.start(100)
 
     def on_slider(self, key, v):
         self.data[key] = int(v)
+        self._debounce.start(100)                     # redraw once the slider settles a little
+
+    def changed(self):
+        self._preview_cache = None
         self.preview.update()
 
     def save(self):
         name = self.name.text().strip()
         if not name:
-            QMessageBox.information(self, "Theme name", "Give your theme a name first.")
+            info(self, "Theme name", "Give your theme a name first.")
             self.name.setFocus()
             return
         if name in theme.BUILT_IN or name.lower() == "auto":
-            QMessageBox.information(self, "Theme name", f"\"{name}\" is a built-in name - pick another one.")
+            info(self, "Theme name", f"\"{name}\" is a built-in name - pick another one.")
             return
         self.data["name"] = name
         self.c.save_custom_theme(dict(self.data))
         self.close()
+
+    def delete_theme(self):
+        name = (self.original or {}).get("name")
+        if name and self.c.delete_custom_theme(name):
+            self.close()
 
     def closeEvent(self, e):
         self.preview.timer.stop()

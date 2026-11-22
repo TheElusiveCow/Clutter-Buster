@@ -123,6 +123,49 @@ def close_logging():
     _handlers.clear()
 
 
+_fault_file = []
+_beat = [0.0]
+
+
+def install_faulthandler():
+    """A hard crash or a freeze leaves a stack trace in faults.log (for diagnosing)."""
+    import faulthandler
+    import time
+    try:
+        f = open(path("faults.log"), "a", encoding="utf-8")
+        f.write(f"--- started {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+        f.flush()
+        _fault_file.append(f)
+        if sys.platform != "win32":
+            # (on Windows it would also log harmless, already-handled COM exceptions such as
+            # 0x8001010D, so there only the freeze watchdog below writes here)
+            faulthandler.enable(file=f, all_threads=True)
+    except Exception:
+        return
+    _beat[0] = time.monotonic()
+
+    def watch():                     # if the app stops answering for 20 s, write where it is stuck
+        dumped = False
+        while True:
+            time.sleep(5)
+            stale = time.monotonic() - _beat[0]
+            if stale > 20 and not dumped:
+                f.write(f"--- not responding for {int(stale)} s at "
+                        f"{datetime.datetime.now().isoformat(timespec='seconds')}\n")
+                faulthandler.dump_traceback(file=f, all_threads=True)
+                f.flush()
+                logging.getLogger("cb").error("The app stopped responding for %d s; details in faults.log", stale)
+                dumped = True
+            elif stale < 5:
+                dumped = False
+    threading.Thread(target=watch, daemon=True, name="cb-watchdog").start()
+
+
+def heartbeat():
+    import time
+    _beat[0] = time.monotonic()
+
+
 def install_excepthook():
     """Any unexpected error gets written to error.log instead of vanishing."""
     def hook(exc_type, exc, tb):

@@ -4,7 +4,7 @@ Font (any font on your PC), size, bold/italic, color and a shadow or outline, wi
 preview. Empty choices follow the theme. Apply = one Undo step."""
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
                                QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from . import namestyle
@@ -122,16 +122,21 @@ class NameStyleDialog(GlassPanel):
         crow.addWidget(theme_c)
         crow.addStretch(1)
         grid.addLayout(crow, 3, 1, 1, 2)
+        from .colorpick import InlineColorPicker
+        self.picker = InlineColorPicker(self.color_hex or "#FFFFFF")
+        self.picker.changed.connect(lambda hx: self.set_color(hx))
+        self.picker.hide()                  # opens right here when you click the colour
+        grid.addWidget(self.picker, 4, 1, 1, 2)
         self.set_color(self.color_hex, notify=False)
 
-        grid.addWidget(QLabel("Readability"), 4, 0)
+        grid.addWidget(QLabel("Readability"), 5, 0)
         self.effect = QComboBox()
         for _k, label in namestyle.EFFECTS:
             self.effect.addItem(label)
         keys = [k for k, _l in namestyle.EFFECTS]
         self.effect.setCurrentIndex(keys.index(self.own.get("effect", "auto")) if self.own.get("effect", "auto") in keys else 0)
         self.effect.currentIndexChanged.connect(lambda _i: self.changed())
-        grid.addWidget(self.effect, 4, 1)
+        grid.addWidget(self.effect, 5, 1)
         lay.addLayout(grid)
 
         self.preview = Preview(self.style_now, g["name"] if g else "Computer Software")
@@ -188,9 +193,10 @@ class NameStyleDialog(GlassPanel):
             self.changed()
 
     def pick_color(self):
-        c = QColorDialog.getColor(QColor(self.color_hex or "#FFFFFF"), self, "Name color")
-        if c.isValid():
-            self.set_color(c.name())
+        """Show / hide the colour picker inside this window."""
+        self.picker.set_color(self.color_hex or namestyle.color({}, "panel_title_text").name())
+        self.picker.setVisible(not self.picker.isVisible())
+        self.setFixedSize(560, 520 + (150 if self.picker.isVisible() else 0))
 
     def reset(self):
         self.use_font.setChecked(False)

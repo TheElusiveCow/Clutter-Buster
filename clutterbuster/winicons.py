@@ -259,6 +259,7 @@ def shell_thumbnail(path, size=256):
         _ole32.CoInitializeEx(None, 2)
     except Exception:
         pass
+    path = os.path.normpath(os.path.abspath(path))     # the shell refuses mixed / and \\ separators
     ptr = ctypes.c_void_p()
     hr = _shell32.SHCreateItemFromParsingName(path, None, ctypes.byref(IID_IShellItemImageFactory), ctypes.byref(ptr))
     if hr != 0 or not ptr.value:

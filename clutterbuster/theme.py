@@ -229,6 +229,48 @@ def apply(name, ui, custom_themes=()):
     return t
 
 
+_group_cache = {}
+
+
+def group_theme(group, base_choice, ui, custom_themes=()):
+    """A fence's own look (Settings on the fence: theme / transparency override), or None
+    when it simply follows the main theme."""
+    if not group or not (group.get("theme") or group.get("transparency") is not None):
+        return None
+    name = resolve(group.get("theme") or base_choice, custom_themes)
+    ui2 = {**DEFAULT_UI, **(ui or {})}
+    if group.get("transparency") is not None:
+        ui2["transparency"] = int(group["transparency"])
+    key = (name, tuple(sorted(ui2.items())), len(custom_themes),
+           tuple(sorted(str(c) for c in custom_themes if c.get("name") == name)))
+    t = _group_cache.get(key)
+    if t is None:
+        if len(_group_cache) > 64:
+            _group_cache.clear()
+        t = _group_cache[key] = build(name, ui2, custom_themes)
+    return t
+
+
+class swapped:
+    """with swapped(t): paint with theme t, then the main theme comes back."""
+
+    def __init__(self, t):
+        self.t, self.saved = t, None
+
+    def __enter__(self):
+        if self.t is not None:
+            self.saved = dict(THEME)
+            THEME.clear()
+            THEME.update(self.t)
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            THEME.clear()
+            THEME.update(self.saved)
+        return False
+
+
 # ------------------------------------------------------------------ helpers
 def qcolor(key):
     return QColor(*THEME[key])

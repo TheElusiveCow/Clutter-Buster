@@ -108,6 +108,30 @@ def bring_to_top(widget):
     QTimer.singleShot(250, widget, go)
 
 
+def front_dialog(dlg):
+    """Dialogs (colour picker, messages) must never open hidden behind our always-on-top
+    windows: that blocks every click while you can't see it (Brian's 'Edit theme' freeze)."""
+    dlg.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+
+    def go():
+        if dlg.isVisible():
+            desktop_layer.make_topmost(int(dlg.winId()))
+            dlg.raise_()
+            dlg.activateWindow()
+    QTimer.singleShot(0, dlg, go)
+    QTimer.singleShot(200, dlg, go)
+    QTimer.singleShot(700, dlg, go)
+
+
+def info(parent, title, text):
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(QMessageBox.Information)
+    front_dialog(box)
+    box.exec()
+
+
 def safe_drop_action(event):
     """IMPORTANT SAFETY: never accept a drop as a MOVE.
 
@@ -268,7 +292,7 @@ def ask(title, text, yes_text="Yes", no_text="Cancel", danger=False):
     box.addButton(no_text, QMessageBox.RejectRole)
     if danger:
         yes.setStyleSheet("background:#e5293b;color:white;font-weight:bold;padding:4px 12px;border-radius:4px;")
-    box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    front_dialog(box)
     box.exec()
     return box.clickedButton() is yes
 

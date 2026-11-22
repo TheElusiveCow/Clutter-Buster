@@ -100,6 +100,27 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
 - **Settings > Apps**: Clutter Buster now appears in Windows Settings > Apps > Installed apps
   (with the broom icon, publisher Brian, version 0.5.0) and can be uninstalled from there.
 
+### Version 0.5.2: tabs on top, names on fences
+- **The name is inside every group now**, on top (nothing sticks out under small tiles, so
+  snapped tiles never overlap). Tabs sit right under the name as a pill bar (the selected tab is
+  highlighted); long names are cut with "…", and when there are too many a **▾** button lists
+  them all. Very small tiles show dots instead.
+- **Names under icons** on small tiles and big panels whenever there's room (Settings >
+  Appearance > *Show names in big panels*: Auto / Always / Never; or per group, see below).
+- **Click an icon on a small tile to open it** (like big panels). Empty space or the name opens
+  the group. Icons light up when you point at them.
+- **Group settings (the gear next to A- / A+)**: accent colour (with a colour picker right in
+  the panel), its own theme, name size + font/colour, small tile / big panel, icons per row,
+  show names, transparency, Use defaults and Delete group. Every change is one Undo step.
+- **No more separate colour windows.** The theme editor, name style and group settings pick
+  colours inside their own window (swatches, hue, brightness, #hex), so nothing can open
+  hidden behind and freeze the app. Messages always open in front.
+- **Delete your own themes**: in the theme editor, the gear menu or Settings (asks once;
+  Ctrl+Z brings it back). Built-in themes can't be deleted; if it was in use, Auto takes over.
+- **Hidden items stay hidden**: if an app's updater (or anything else) makes a grouped item
+  visible again, it's hidden again within seconds (desktop folder watch + a check every 30 s).
+- `faults.log` records a stack trace if the app ever crashes or stops responding for 20 s.
+
 ### Version 0.5.1: easier on the desktop
 - **Drag icons straight out.** Drag an icon out of a big panel, or one of the little icons
   inside a small tile, onto the desktop and it shows there again; drop it on another group to

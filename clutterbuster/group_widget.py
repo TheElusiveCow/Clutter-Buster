@@ -20,6 +20,7 @@ from .store import current_tab, tab_indices, tab_of
 from PySide6.QtCore import QTimer as QTimerS
 from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_edit_outline, draw_glass,
                     draw_neon, draw_shadow, draw_warn, read_item)
+from . import theme
 from .theme import THEME, accent_color, is_dark, qcolor, rad
 
 DRAG_THRESHOLD = 6
@@ -101,9 +102,15 @@ class GroupWidget(DesktopLayerWindow):
     def glass_rect(self):
         """Tile mode: the frosted square. Panel mode: the whole panel."""
         if self.mode == "tile":
-            s = max(24.0, min(self.width() - 20.0, self.height() - float(self.label_h())))
-            return QRectF((self.width() - s) / 2, 10, s, s)
+            # the whole tile is glass now: name on top INSIDE it, then tabs, then icons
+            # (nothing sticks out under it any more, so snapped tiles never overlap names)
+            return QRectF(6, 6, max(24.0, self.width() - 12.0), max(24.0, self.height() - 12.0))
         return QRectF(6, 9, self.width() - 12, self.height() - 15)
+
+    def tile_title_rect(self):
+        r = self.glass_rect()
+        h = QFontMetrics(self.name_font()).height() + 4
+        return QRectF(r.left() + 8, r.top() + 5, r.width() - 16, h)
 
     def glass_rect_global(self):
         r = self.glass_rect().toRect()
@@ -133,13 +140,14 @@ class GroupWidget(DesktopLayerWindow):
         r = self.glass_rect()
         sz = 18
         if self.mode == "tile":
-            x0 = r.center().x() - 1.5 * sz - 2
-            y = r.top() + 3
+            tr = self.tile_title_rect()
+            x0 = max(tr.left(), tr.right() - 4 * sz - 6)
+            y = tr.center().y() - sz / 2
         else:
             tw = QFontMetrics(self.name_font()).horizontalAdvance(g["name"])
-            x0 = min(r.left() + 30 + tw + 8, self.name_right() - 3 * sz - 8)
+            x0 = min(r.left() + 30 + tw + 8, self.name_right() - 4 * sz - 10)
             y = r.top() + (TITLE_H - sz) / 2 + 1
-        return {k: QRectF(x0 + i * (sz + 2), y, sz, sz) for i, k in enumerate(("smaller", "bigger", "pencil"))}
+        return {k: QRectF(x0 + i * (sz + 2), y, sz, sz) for i, k in enumerate(("smaller", "bigger", "pencil", "gear"))}
 
     def pencil_rect(self):
         return self.name_buttons().get("pencil")
@@ -161,7 +169,23 @@ class GroupWidget(DesktopLayerWindow):
         return (plus.left() - 6) if (plus is not None and not segs) else (self.menu_rect().left() - 4 - badge_w)
 
     def labels_visible(self):
-        return self.glass_rect().width() >= 56 or self._hover
+        return True
+
+    def per_row(self):
+        g = self.group
+        return int((g or {}).get("per_row") or THEME.get("per_row", 3))
+
+    def labels_mode(self):
+        g = self.group
+        return (g or {}).get("labels") or self.c.layout.prefs.get("panel_labels", "auto")
+
+    def own_theme(self):
+        return theme.group_theme(self.group, self.c.layout.prefs.get("theme", theme.AUTO), self.c.ui,
+                                 self.c.layout.custom_themes)
+
+    def paintEvent(self, e):
+        with theme.swapped(self.own_theme()):        # a group can have its own theme / transparency
+            super().paintEvent(e)
 
     def menu_rect(self):
         r = self.glass_rect()
@@ -186,7 +210,8 @@ class GroupWidget(DesktopLayerWindow):
             mr = self.menu_rect()
             return [], QRectF(), tabsmod.plus_only(mr.left() - 26 - badge_w, r.top() + (TITLE_H - tabsmod.TAB_H) / 2 + 1)
         f = tabsmod.tab_font(self.font())
-        return tabsmod.bar_layout(f, g["tabs"], r.left() + 10, r.top() + TITLE_H - 2, r.width() - 20)
+        return tabsmod.bar_layout(f, g["tabs"], r.left() + 10, r.top() + TITLE_H - 2, r.width() - 20,
+                                  current=g.get("tab"))
 
     def tab_at(self, pos):
         if self.mode != "panel" or self.edges_at(pos):
@@ -217,7 +242,7 @@ class GroupWidget(DesktopLayerWindow):
             self.page = min(self.page, pages - 1)
             return cr, 1, per, tabsmod.ROW_H, pages
         max_cell = THEME["popup_icon"] + 26          # compact, like desktop icons
-        want = max(1, int(THEME.get("per_row", 3)))
+        want = max(1, self.per_row())
         cell = min(max_cell, cr.width() / want)      # the columns share the width evenly
         if cell >= 44:
             cols = want
@@ -292,7 +317,7 @@ class GroupWidget(DesktopLayerWindow):
     # ------------------------------------------------------------ painting
     def radius(self):
         if self.mode == "tile":
-            return rad(max(8.0, self.glass_rect().width() * 0.25))
+            return rad(max(8.0, min(22.0, self.glass_rect().width() * 0.12)))
         return rad(16)
 
     def paint_body(self, p):
@@ -331,6 +356,8 @@ class GroupWidget(DesktopLayerWindow):
             hot = self._hover_button == k
             if k == "pencil":
                 draw_pencil(p, br, hot)
+            elif k == "gear":
+                draw_gear(p, br, hot)
             else:
                 draw_size_button(p, br, k == "bigger", hot)
 
@@ -363,98 +390,133 @@ class GroupWidget(DesktopLayerWindow):
             p.drawLine(QPointF(x2 - n, y2), QPointF(x2, y2 - n))
         p.restore()
 
-    def tile_preview_rects(self):
-        """[(item index, rect)] of the mini icons inside a small tile (first tab, Icons per row)."""
-        g = self.group
-        if g is None or self.mode != "tile":
-            return []
-        r = self.glass_rect()
-        s = r.width()
-        pad = s * 0.13
-        n = max(2, min(6, int(THEME.get("per_row", 3))))      # follows "Icons per row"
-        strip = self.tile_strip_area()
-        avail_h = (strip.top() - 2 - (r.y() + pad)) if strip is not None else s - 2 * pad
-        cell = min((s - 2 * pad) / n, avail_h / n)
-        isz = cell * 0.84
-        x0 = r.x() + (s - n * cell) / 2
-        shown = tab_indices(g) if g.get("tabs") else list(range(len(g["items"])))   # the selected tab
-        out = []
-        for i, idx in enumerate(shown[:n * n]):
-            row, col = divmod(i, n)
-            out.append((idx, QRectF(x0 + col * cell + (cell - isz) / 2,
-                                    r.y() + pad + row * cell + (cell - isz) / 2, isz, isz)))
-        return out
-
-    # ---- small tiles with 2+ tabs: a strip of little pills (or dots) to switch tabs in place
+    # ---- small tiles: [ name ] [ tabs ] [ icons with names when there's room ]
     def tile_strip_area(self):
         if self.mode != "tile" or not self.multi_tab():
             return None
-        r = self.glass_rect()
-        h = max(13.0, min(20.0, r.width() * 0.13))
-        return QRectF(r.x() + 6, r.bottom() - h - 6, r.width() - 12, h)
+        tr = self.tile_title_rect()
+        fm = QFontMetrics(self.strip_font())
+        h = max(16.0, min(24.0, fm.height() + 8.0))
+        return QRectF(tr.left(), tr.bottom() + 3, tr.width(), h)
+
+    def strip_font(self, pt=8.5):
+        return tabsmod.tab_font(self.font(), pt)
+
+    def tile_bar(self):
+        """(segments, track) of the tab pills at the top of a small tile; empty = use dots."""
+        area = self.tile_strip_area()
+        if area is None:
+            return tabsmod.Segs(), QRectF()
+        segs, track, _p = tabsmod.bar_layout(self.strip_font(), self.group["tabs"], area.left(), area.top(),
+                                             area.width(), plus=False, current=self.group.get("tab"),
+                                             h=area.height(), min_pt=6.5, dots_ok=True)
+        if segs:      # centre the pill
+            dx = (area.width() - track.width()) / 2
+            if dx > 0:
+                track = track.translated(dx, 0)
+                moved = tabsmod.Segs((tid, rr.translated(dx, 0)) for tid, rr in segs)
+                moved.font, moved.hidden, moved.names = segs.font, segs.hidden, segs.names
+                segs = moved
+        return segs, track
 
     def tile_strip(self):
-        """[(tab id, rect, label or None)] - names when they fit, else dots."""
+        """[(tab id, rect)] - pills when they fit (names cut with '…', '▾' for the rest), else dots."""
+        segs, _track = self.tile_bar()
+        if segs:
+            return list(segs)
         area = self.tile_strip_area()
         if area is None:
             return []
         tabs = self.group["tabs"]
         n = len(tabs)
-        f = self.strip_font()
-        fm = QFontMetrics(f)
-        gap = 3.0
-        w = (area.width() - gap * (n - 1)) / n
-        names = [t.get("name") or "Tab" for t in tabs]
-        if all(fm.horizontalAdvance(nm) + 6 <= w for nm in names):     # every name fits: little pills
-            return [(t["id"], QRectF(area.x() + i * (w + gap), area.y(), w, area.height()), names[i])
-                    for i, t in enumerate(tabs)]
-        d = min(area.height(), 12.0)
+        d = min(area.height() - 6, 10.0)
         step = min(d + 6, area.width() / n)
         x0 = area.center().x() - step * n / 2
-        return [(t["id"], QRectF(x0 + i * step + (step - d) / 2, area.center().y() - d / 2, d, d), None)
+        return [(t["id"], QRectF(x0 + i * step + (step - d) / 2, area.center().y() - d / 2, d, d))
                 for i, t in enumerate(tabs)]
 
-    def strip_font(self):
-        f = QFont(self.font())
-        f.setPointSizeF(7.5)
-        f.setWeight(QFont.DemiBold)
-        return f
-
     def tile_tab_at(self, pos):
-        for tid, rr, _lbl in self.tile_strip():
+        for tid, rr in self.tile_strip():
             if rr.adjusted(-2, -3, 2, 3).contains(QPointF(pos)):
                 return tid
         return None
 
     def paint_tile_strip(self, p, acc):
+        segs, track = self.tile_bar()
+        g = self.group
+        if segs:
+            tabsmod.paint_bar(p, self.strip_font(), g["tabs"], segs, track, None, g.get("tab"), acc,
+                              hover=self._hover_tab)
+            return
         strip = self.tile_strip()
         if not strip:
             return
-        g = self.group
-        cur = g.get("tab")
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        p.setFont(self.strip_font())
-        dark = is_dark()
-        for tid, rr, lbl in strip:
-            sel = tid == cur
-            hov = tid == getattr(self, "_hover_tab", None)
-            rad_ = rr.height() / 2
-            if sel:
+        for tid, rr in strip:
+            if tid == g.get("tab"):
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(acc))
             else:
-                p.setPen(QPen(QColor(255, 255, 255, 70) if dark else QColor(0, 0, 0, 45), 1))
-                p.setBrush(QColor(255, 255, 255, 40 if hov else 18) if dark else QColor(0, 0, 0, 26 if hov else 12))
-            p.drawRoundedRect(rr, rad_, rad_)
-            if lbl:
-                p.setPen(QColor(255, 255, 255) if sel else qcolor("panel_subtext"))
-                p.drawText(rr, Qt.AlignCenter, lbl)
+                p.setPen(QPen(QColor(255, 255, 255, 110) if is_dark() else QColor(0, 0, 0, 80), 1))
+                p.setBrush(Qt.NoBrush)
+            p.drawEllipse(rr)
         p.restore()
 
+    def tile_label_font(self):
+        f = QFont(self.font())
+        f.setPointSizeF(8.0)
+        return f
+
+    def tile_layout(self):
+        """-> (cells [(item index, icon rect, cell rect)], lines of name under each icon).
+        Names show whenever a cell has room for the icon + a line of text (Settings can force
+        Always / Never)."""
+        g = self.group
+        if g is None or self.mode != "tile":
+            return [], 0
+        r = self.glass_rect()
+        n = max(2, min(6, self.per_row()))      # follows "Icons per row" (this group's own, if set)
+        strip = self.tile_strip_area()
+        top = (strip.bottom() if strip is not None else self.tile_title_rect().bottom()) + 5
+        pad = max(6.0, r.width() * 0.06)
+        area = QRectF(r.left() + pad, top, r.width() - 2 * pad, r.bottom() - pad * 0.8 - top)
+        shown = (tab_indices(g) if g.get("tabs") else list(range(len(g["items"]))))[:n * n]
+        lh = QFontMetrics(self.tile_label_font()).height()
+        cw = area.width() / n
+        rows = max(1, math.ceil(len(shown) / n))
+        ch = min(area.height() / rows, cw + 2 * lh + 6)
+        mode = self.labels_mode()
+        lines = 0
+        if mode != "never" and area.height() > 0:
+            if ch - 2 * lh - 4 >= max(18.0, cw * 0.5):
+                lines = 2
+            elif ch - lh - 4 >= max(16.0, cw * 0.42) or mode == "always":
+                lines = 1
+        if lines:
+            isz = max(10.0, min(cw * 0.74, ch - lines * lh - 6))
+        else:
+            isz = min(cw, ch) * 0.84
+        out = []
+        for i, idx in enumerate(shown):
+            row, col = divmod(i, n)
+            cell = QRectF(area.left() + col * cw, area.top() + row * ch, cw, ch)
+            block = isz + (lines * lh + 2 if lines else 0)
+            y = cell.top() + max(0.0, (ch - block) / 2) if not lines else cell.top() + 2
+            out.append((idx, QRectF(cell.center().x() - isz / 2, y, isz, isz), cell))
+        return out, lines
+
+    def tile_preview_rects(self):
+        """[(item index, icon rect)] of the icons inside a small tile (the selected tab)."""
+        return [(idx, ir) for idx, ir, _c in self.tile_layout()[0]]
+
     def tile_item_at(self, pos):
-        for idx, ir in self.tile_preview_rects():
-            if ir.adjusted(-2, -2, 2, 2).contains(QPointF(pos)):
+        cells, lines = self.tile_layout()
+        for idx, ir, cell in cells:
+            hit = ir.adjusted(-2, -2, 2, 2)
+            if lines:
+                hit = hit.united(QRectF(cell.left() + 2, ir.bottom(), cell.width() - 4, cell.bottom() - ir.bottom()))
+            if hit.contains(QPointF(pos)):
                 return idx
         return None
 
@@ -470,17 +532,38 @@ class GroupWidget(DesktopLayerWindow):
             p.setPen(QPen(ring, 1.6))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rr - 1, rr - 1)
-        for idx, ir in self.tile_preview_rects():
-            icons.icon_for(g["items"][idx]["path"]).paint(p, ir.toRect())
-        self.paint_tile_strip(p, acc)
-        if self.labels_visible() and not (self.editor and self.editor.isVisible()):
+        # the name, on top inside the tile
+        if not (self.editor and self.editor.isVisible()):
             st = namestyle.resolve(self.c.layout, g)
-            f = namestyle.font(self.font(), st, TILE_PT, False)
-            lr = QRectF(0, r.bottom() + 4, self.width(), QFontMetrics(f).height() + 4)
-            namestyle.draw(p, lr, g["name"], Qt.AlignHCenter | Qt.AlignTop, st, self.font(), TILE_PT, False,
-                           "label_text", default_effect="shadow", elide_w=self.width() - 4)
+            tr = self.tile_title_rect()
+            if self._hover:            # leave room for the A- A+ pencil buttons on the right
+                bw = 4 * 20 + 6
+                tr = tr.adjusted(bw, 0, -bw, 0) if tr.width() > 2 * bw + 30 else tr.adjusted(0, 0, -bw, 0)
+            namestyle.draw(p, tr, g["name"], Qt.AlignHCenter | Qt.AlignVCenter, st, self.font(), TILE_PT, False,
+                           "panel_title_text", default_effect="shadow" if is_dark() else "none",
+                           elide_w=tr.width())
             if self._hover:
                 self.paint_name_buttons(p)
+        self.paint_tile_strip(p, acc)
+        cells, lines = self.tile_layout()
+        lf = self.tile_label_font()
+        lfm = QFontMetrics(lf)
+        for idx, ir, cell in cells:
+            it = g["items"][idx]
+            if idx == self._hover_item:                      # hover: a soft highlight = clickable
+                hl = (QRectF(cell.left() + 2, ir.top() - 3, cell.width() - 4,
+                             (cell.bottom() if lines else ir.bottom() + 3) - ir.top() + 3) if lines
+                      else ir.adjusted(-4, -4, 4, 4))
+                p.setPen(QPen(QColor(255, 255, 255, 70) if is_dark() else QColor(0, 0, 0, 40), 1))
+                p.setBrush(QColor(255, 255, 255, 40) if is_dark() else QColor(0, 0, 0, 22))
+                p.drawRoundedRect(hl, 8, 8)
+            icons.icon_for(it["path"]).paint(p, ir.toRect())
+            if lines:
+                y = ir.bottom() + 2
+                p.setFont(lf)
+                for line in two_lines(lfm, icons.item_name(it), cell.width() - 4)[:lines]:
+                    draw_item_label(p, QRectF(cell.left() + 1, y, cell.width() - 2, lfm.height() + 1), line)
+                    y += lfm.height()
 
     def _paint_panel(self, p, g):
         r = self.glass_rect()
@@ -525,7 +608,7 @@ class GroupWidget(DesktopLayerWindow):
             nf.setPointSizeF(8.5)
             p.setFont(nf)
             nfm = QFontMetrics(nf)
-            show_labels = labels_fit(cell, nfm.height(), self.c.layout.prefs.get("panel_labels", "auto"))
+            show_labels = labels_fit(cell, nfm.height(), self.labels_mode())
             for idx, ir in self.panel_item_rects():
                 it = g["items"][idx]
                 card = ir.adjusted(4, 4, -4, -4)
@@ -535,7 +618,9 @@ class GroupWidget(DesktopLayerWindow):
                 p.drawRoundedRect(card, rad(max(6, cell * 0.16)), rad(max(6, cell * 0.16)))
                 if show_labels:
                     # icon on top, room for two lines of name under it
-                    isz = max(14.0, min(cell * 0.5, card.height() - 2 * nfm.height() - 12))
+                    isz = max(14.0, min(cell * 0.55, card.height() - 2 * nfm.height() - 12))
+                    if isz < cell * 0.38:          # only room for one line: a bigger icon
+                        isz = max(14.0, min(cell * 0.55, card.height() - nfm.height() - 12))
                     icon_r = QRectF(card.center().x() - isz / 2, card.top() + 5, isz, isz)
                 else:
                     isz = cell * 0.6
@@ -543,13 +628,11 @@ class GroupWidget(DesktopLayerWindow):
                 icons.icon_for(it["path"]).paint(p, icon_r.toRect())
                 self.paint_warn(p, it, icon_r)
                 if show_labels:
-                    p.setPen(qcolor("panel_text"))
                     y = icon_r.bottom() + 3
                     for line in two_lines(nfm, icons.item_name(it), card.width() - 6):
                         if y + nfm.height() > card.bottom() + 3:
                             break
-                        p.drawText(QRectF(card.left() + 2, y, card.width() - 4, nfm.height() + 1),
-                                   Qt.AlignHCenter | Qt.AlignTop, line)
+                        draw_item_label(p, QRectF(card.left() + 2, y, card.width() - 4, nfm.height() + 1), line)
                         y += nfm.height()
         if not vis:
             p.setPen(qcolor("hint_text"))
@@ -629,12 +712,13 @@ class GroupWidget(DesktopLayerWindow):
             kind_, edges_ = self.hit(pos)
             cur = self._cursor_for(edges_)
             ht = kind_[4:] if kind_.startswith("tab:") else ("+" if kind_ == "plus" else None)
-            hb = kind_ if kind_ in ("smaller", "bigger", "pencil") else None
+            hb = kind_ if kind_ in ("smaller", "bigger", "pencil", "gear") else None
             hp = hb is not None
             if hb != self._hover_button:
                 self._hover_button = hb
                 self._hover_pencil = hb == "pencil"
                 tips = {"pencil": "Rename (or double-click the name)",
+                        "gear": "Settings for this group",
                         "smaller": f"Smaller name ({self.name_size()} pt) - or Ctrl + mouse wheel over the name",
                         "bigger": f"Bigger name ({self.name_size()} pt) - or Ctrl + mouse wheel over the name"}
                 self.setToolTip(tips.get(hb, ""))
@@ -655,11 +739,14 @@ class GroupWidget(DesktopLayerWindow):
                 self.setCursor(Qt.SizeAllCursor)
             else:
                 self.unsetCursor()
-            hv = self.item_at(pos)
+            hv = self.item_at(pos) if self.mode == "panel" else (
+                None if (hp or cur is not None) else self.tile_item_at(pos))
+            if self.mode == "tile" and hv is not None and cur is None:
+                self.setCursor(Qt.PointingHandCursor)        # icons on a tile are clickable
             if hv != self._hover_item:
                 self._hover_item = hv
                 g = self.group
-                if self.mode == "panel" and g and hv is not None and hv < len(g["items"]):
+                if g and hv is not None and hv < len(g["items"]):
                     self.setToolTip(icons.item_name(g["items"][hv]))     # the full name
                 elif ht is None:
                     self.setToolTip("")
@@ -721,14 +808,21 @@ class GroupWidget(DesktopLayerWindow):
         elif not active:
             if kind == "pencil":
                 self.start_rename()
+            elif kind == "gear":
+                self.c.fence_settings(self.gid, self)
             elif kind in ("smaller", "bigger"):
                 self.c.bump_name_size(self.gid, 1 if kind == "bigger" else -1)
                 self.setToolTip(f"Name size: {self.name_size()} pt")
             elif kind in ("tile", "title") and self.on_name(e.position()):
                 # the name: wait a moment - a double-click renames instead of opening
                 self._open_timer.start(QApplication.doubleClickInterval())
+            elif kind == "tile" and self._press_item is not None and not self.c.edit_mode:
+                g = self.group                              # an icon on a small tile: launch it
+                if g and self._press_item < len(g["items"]):
+                    self.c.clear_badge(self.gid)
+                    self.c.launch(g["items"][self._press_item]["path"])
             elif kind == "tile":
-                self.c.open_group(self.gid)                 # single click opens a small tile
+                self.c.open_group(self.gid)                 # empty space opens a small tile
             elif kind == "title":
                 self.c.open_group(self.gid)                 # big panel: click the title
             elif kind.startswith("tab:"):
@@ -753,7 +847,7 @@ class GroupWidget(DesktopLayerWindow):
         r = self.glass_rect()
         pos = QPointF(pos)
         if self.mode == "tile":
-            return pos.y() > r.bottom() + 1
+            return self.tile_title_rect().adjusted(0, -3, 0, 2).contains(pos)
         return r.top() <= pos.y() <= r.top() + TITLE_H and r.left() + 24 <= pos.x() <= self.menu_rect().left() - 30
 
     def mouseDoubleClickEvent(self, e):
@@ -859,7 +953,8 @@ class GroupWidget(DesktopLayerWindow):
         self.editor.setFont(ef)
         eh = QFontMetrics(ef).height() + 8
         if self.mode == "tile":
-            self.editor.setGeometry(1, int(r.bottom() + 3), self.width() - 2, eh)
+            tr = self.tile_title_rect()
+            self.editor.setGeometry(int(tr.left()), int(tr.center().y() - eh / 2), int(tr.width()), eh)
         else:
             self.editor.setGeometry(int(r.left() + 26), int(r.top() + (TITLE_H - eh) / 2 + 1), int(r.width() - 70), eh)
         self.editor.setStyleSheet(rename_qss())
@@ -979,13 +1074,50 @@ def draw_pencil(p, r, hot=False):
     p.restore()
 
 
+def draw_gear(p, r, hot=False):
+    """A small round glass button with a cog in it (this group's own settings)."""
+    if r is None:
+        return
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(qcolor("card_border"), 1))
+    p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
+    p.drawEllipse(r)
+    c = r.center()
+    k = r.width() / 18.0
+    col = qcolor("panel_text")
+    pen = QPen(col, 1.9 * k)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    for i in range(8):
+        a = math.pi / 4 * i
+        p.drawLine(QPointF(c.x() + 3.6 * k * math.cos(a), c.y() + 3.6 * k * math.sin(a)),
+                   QPointF(c.x() + 5.6 * k * math.cos(a), c.y() + 5.6 * k * math.sin(a)))
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(col, 1.6 * k))
+    p.drawEllipse(c, 3.4 * k, 3.4 * k)
+    p.restore()
+
+
 def labels_fit(cell, line_h, mode="auto"):
     """Names under big-panel icons: Always / Never / Auto = when a cell fits an icon + ~2 lines."""
     if mode == "always":
         return True
     if mode == "never":
         return False
-    return cell - 8 >= 22 + 2 * line_h + 12
+    return cell - 8 >= 18 + line_h + 8       # an icon + one line is enough (2 lines when there's room)
+
+
+def draw_item_label(p, rect, text):
+    """An item's name: small white text with a soft shadow on dark themes (like the mockup),
+    the theme's text colour on light ones."""
+    if is_dark():
+        p.setPen(QColor(0, 0, 0, 150))
+        p.drawText(rect.translated(0, 1), Qt.AlignHCenter | Qt.AlignTop, text)
+        p.setPen(QColor(255, 255, 255, 240))
+    else:
+        p.setPen(qcolor("panel_text"))
+    p.drawText(rect, Qt.AlignHCenter | Qt.AlignTop, text)
 
 
 def two_lines(fm, text, width):
@@ -1003,6 +1135,8 @@ def two_lines(fm, text, width):
         n = len(text)
         while n > 1 and fm.horizontalAdvance(text[:n]) > width:
             n -= 1
+        if 0 < len(text) - n < 3:          # no lonely 1-2 letters on line 2 ("Monosna / p")
+            n = max(1, (len(text) + 1) // 2)
         first, rest = text[:n], text[n:]
     return [first, fm.elidedText(rest.strip(), Qt.ElideRight, width)] if rest.strip() else [first]
 

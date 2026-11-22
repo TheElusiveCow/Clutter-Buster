@@ -30,6 +30,8 @@ from clutterbuster import paths  # noqa: E402
 paths.ensure_dirs()
 paths.setup_logging()
 paths.install_excepthook()
+if "--quit" not in sys.argv:
+    paths.install_faulthandler()
 
 if __name__ == "__main__":
     if SHOWCASE:

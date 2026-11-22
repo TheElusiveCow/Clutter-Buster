@@ -72,7 +72,14 @@ class QuickMenu(GlassPanel):
         edit = _btn("\u270E  Edit theme...", "Change the colors of the theme you're using "
                     "(a built-in theme is saved as your own copy)")
         edit.clicked.connect(lambda: self._do(self.c.edit_theme))
-        lay.addWidget(edit)
+        trow = QHBoxLayout()
+        trow.addWidget(edit, 1)
+        cur = self.c.layout.prefs.get("theme", theme.AUTO)
+        if any(t.get("name") == cur for t in self.c.layout.custom_themes):
+            dele = _btn("\U0001F5D1  Delete", f"Delete your theme \"{cur}\" (asks first; Undo brings it back)")
+            dele.clicked.connect(lambda: self._do(lambda: self.c.delete_custom_theme(cur)))
+            trow.addWidget(dele)
+        lay.addLayout(trow)
 
         lay.addWidget(self._label("Groups"))
         self.hide_cb = QCheckBox("Hide all groups (their items stay hidden)")

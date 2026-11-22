@@ -55,7 +55,13 @@ class Hider:
             return "not-on-desktop"  # e.g. a file from Documents: grouped, but never hidden
         if self.ledger.has(p):
             if not df.is_hidden(p):
-                df.set_hidden(p, True)
+                # it came back visible (an app updater rewrote the shortcut, a sync tool, ...)
+                if not df.set_hidden(p, True):
+                    self.failed.add(df.norm(p))
+                    log.info("Could not hide %s again (Windows error %s)", p, df.last_error(p))
+                    return "failed"
+                log.info("Hid %s again (it had become visible)", p)
+            self.failed.discard(df.norm(p))
             return "hidden"
         if df.is_hidden(p):
             return "pre-hidden"  # you hid it yourself; we leave it exactly as it is

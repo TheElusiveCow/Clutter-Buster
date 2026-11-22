@@ -194,7 +194,8 @@ class Layout:
         return self.extra.setdefault("custom_themes", [])
 
     def snapshot(self):
-        return copy.deepcopy({"groups": self.groups, "favorites": self.favorites, "ui": self.ui})
+        return copy.deepcopy({"groups": self.groups, "favorites": self.favorites, "ui": self.ui,
+                              "custom_themes": self.custom_themes, "theme": self.prefs.get("theme")})
 
     def restore(self, snap):
         if isinstance(snap, list):  # stage 1 style snapshot
@@ -206,6 +207,10 @@ class Layout:
         self.favorites = snap.get("favorites", [])
         if "ui" in snap:
             self.extra["ui"] = snap["ui"]
+        if "custom_themes" in snap:
+            self.extra["custom_themes"] = snap["custom_themes"]
+        if snap.get("theme"):
+            self.prefs["theme"] = snap["theme"]
 
 
 class UndoStack:

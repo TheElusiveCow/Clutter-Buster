@@ -8,7 +8,7 @@ import time
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QColorDialog, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import __version__, desktop_files as df, desktop_layer, icons, integration, organize, paths, permfix, removal, sounds, theme
 from .dock import Dock
@@ -112,6 +112,9 @@ class Controller:
         self.layer_timer = QTimer()
         self.layer_timer.timeout.connect(self.reassert_layer)
         self.layer_timer.start(2500)
+        self.beat_timer = QTimer()                  # tells the freeze watchdog we're alive
+        self.beat_timer.timeout.connect(paths.heartbeat)
+        self.beat_timer.start(2000)
 
         # Stage 3: neon glow animation (max 25 fps, paused while a game / full-screen or
         # maximized window covers the desktop), Auto theme watcher, and delayed saving.
@@ -131,6 +134,19 @@ class Controller:
         self._icons_timer.setSingleShot(True)
         self._icons_timer.timeout.connect(self._repaint_all)
         icons._ensure_notifier().changed.connect(lambda: self._icons_timer.start(80))   # thumbnails ready
+        # Grouped items that come back visible (an updater recreating its shortcut, a restore,
+        # ...) are hidden again: right away when a desktop folder changes, and every 30 s.
+        self._recheck_timer = QTimer()
+        self._recheck_timer.setSingleShot(True)
+        self._recheck_timer.timeout.connect(self.recheck_hidden)
+        self.recheck_timer = QTimer()
+        self.recheck_timer.timeout.connect(self.recheck_hidden)
+        if not self.showcase:
+            from PySide6.QtCore import QFileSystemWatcher
+            self.desk_watch = QFileSystemWatcher([d for d in df.desktop_dirs() if os.path.isdir(d)])
+            self.desk_watch.directoryChanged.connect(lambda *_: self._recheck_timer.start(1500))
+            self.recheck_timer.start(30000)
+            QTimer.singleShot(4000, self.refresh_explorer)     # make sure Explorer redrew after start-up
         self.permfix_timer = QTimer()
         self.permfix_timer.setSingleShot(True)
         self.permfix_timer.timeout.connect(self.check_permfix)
@@ -299,14 +315,25 @@ class Controller:
         themes = self.layout.custom_themes
         if not any(t.get("name") == name for t in themes):
             return False
-        if confirm and not ask("Delete theme?", f"Delete your theme \"{name}\"?\n\nThis can't be undone.",
+        if confirm and not ask("Delete theme?", f"Delete your theme \"{name}\"?\n\nYou can Undo this (Ctrl+Z).",
                                yes_text="Delete theme", danger=True):
             return False
+        self.checkpoint("delete theme")
         self.layout.extra["custom_themes"] = [t for t in themes if t.get("name") != name]
         if self.layout.prefs.get("theme") == name:
             self.layout.prefs["theme"] = theme.AUTO
+        for g in self.layout.groups:                     # groups that used it follow the main theme again
+            if g.get("theme") == name:
+                g.pop("theme", None)
         self.layout.save()
         self.apply_theme()
+        self.update_undo_ui()
+        log.info("Deleted custom theme %s", name)
+        if self.quick_menu is not None:
+            try:
+                self.quick_menu.close()
+            except RuntimeError:
+                pass
         return True
 
     def set_pref(self, key, value):
@@ -480,10 +507,45 @@ class Controller:
     def sync_hidden(self):
         statuses = self.hider.sync(self.layout.wanted_hidden())
         failed = [p for p, s in statuses.items() if s == "failed"]
+        before = getattr(self, "failed_hides", set())
         self.failed_hides = {df.norm(p) for p in failed}
+        if self.failed_hides != before:                # keep the orange ! in step
+            for w in getattr(self, "widgets", {}).values():
+                w.update()
         if failed and not self.showcase and hasattr(self, "permfix_timer"):
             self.permfix_timer.start(1200)        # offer the shared-desktop permission fix
         return statuses, failed
+
+    def visible_grouped(self):
+        """Grouped desktop items that are NOT hidden right now (should be none, except failed ones)."""
+        out = []
+        for p in self.layout.wanted_hidden():
+            if df.is_url(p) or not os.path.exists(p) or not df.is_on_desktop(p):
+                continue
+            if not df.is_hidden(p):
+                out.append(p)
+        return out
+
+    def recheck_hidden(self):
+        """Hide again anything grouped that became visible; returns how many were found."""
+        if getattr(self, "removed", False):
+            return 0
+        vis = [p for p in self.visible_grouped() if df.norm(p) not in self.failed_hides]
+        if vis:
+            log.info("Re-check: %d grouped item(s) visible again: %s", len(vis),
+                     ", ".join(os.path.basename(p) for p in vis))
+            self.sync_hidden()
+            self.hider.ledger.save()
+            for p in vis:
+                df.notify_changed(p)
+        return len(vis)
+
+    def refresh_explorer(self):
+        """Nudge Explorer to redraw every hidden grouped item (it sometimes keeps a stale icon
+        after a quick show/hide, e.g. around a restart)."""
+        for p in self.layout.wanted_hidden():
+            if not df.is_url(p) and os.path.exists(p) and df.is_hidden(p):
+                df.notify_changed(p)
 
     # ------------------------------------------------------------------ shared-desktop permission fix
     def permfix_candidates(self, gid=None):
@@ -717,9 +779,8 @@ class Controller:
         g = self.layout.group(gid)
         if g is None:
             return
-        c = QColorDialog.getColor(QColor(g.get("accent") or "#0A84FF"), None, f"Accent color for {g['name']}")
-        if c.isValid():
-            self.set_accent(gid, c.name())
+        # the colour picker lives inside the group's settings panel (no separate dialog)
+        self.fence_settings(gid, self.widgets.get(gid)).toggle_picker(True)
 
     def set_mode(self, gid, mode):
         g = self.layout.group(gid)
@@ -1025,8 +1086,24 @@ class Controller:
         if self.popup.isVisible() and self.popup.gid == gid:
             self.popup.refresh()
 
+    def more_tabs_menu(self, gid, widget=None):
+        """The '▾' button when a group has more tabs than fit: every tab, pick one."""
+        g = self.layout.group(gid)
+        if g is None:
+            return
+        m = QMenu(widget)
+        for t in g.get("tabs") or []:
+            a = m.addAction(t.get("name") or "Tab")
+            a.setCheckable(True)
+            a.setChecked(t["id"] == g.get("tab"))
+            a.triggered.connect(lambda _=False, tid=t["id"]: self.select_tab(gid, tid))
+        m.exec(QCursor.pos())
+
     def select_tab(self, gid, tid):
         """Switch tab (remembered, not an undo step)."""
+        if tid == "more":
+            QTimer.singleShot(0, lambda: self.more_tabs_menu(gid, self.widgets.get(gid)))
+            return
         g = self.layout.group(gid)
         if g is None or not tab_of(g, tid) or g.get("tab") == tid:
             return
@@ -1134,6 +1211,8 @@ class Controller:
         self.commit()
 
     def tab_menu(self, gid, tid, gpos, widget):
+        if tid == "more":
+            return self.more_tabs_menu(gid, widget)
         g = self.layout.group(gid)
         t = tab_of(g, tid) if g else None
         if t is None:
@@ -1172,6 +1251,53 @@ class Controller:
         tid = self.add_tab(gid)
         if tid and hasattr(widget, "start_tab_rename"):
             QTimer.singleShot(60, lambda: widget.start_tab_rename(tid))
+
+    # ------------------------------------------------------------------ one group's own settings (gear)
+    def fence_settings(self, gid, widget=None):
+        from .fence_settings import FenceSettings
+        old = getattr(self, "fence_panel", None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:
+                pass
+        self.fence_panel = FenceSettings(self, gid)
+        self.fence_panel.destroyed.connect(lambda *_: setattr(self, "fence_panel", None))
+        self.fence_panel.anchor()
+        self.fence_panel.show()
+        return self.fence_panel
+
+    def set_group_prop(self, gid, key, value, label, burst=False):
+        """Set (or clear, with None) one of a group's own settings. One Undo step; slider drags
+        merge into one step."""
+        g = self.layout.group(gid)
+        if g is None or g.get(key) == value:
+            return
+        if burst:
+            self._name_burst(("prop", gid, key), label)
+        else:
+            self.checkpoint(label)
+        if value is None:
+            g.pop(key, None)
+        else:
+            g[key] = value
+        self.commit()
+        p = getattr(self, "fence_panel", None)
+        if p is not None:
+            try:
+                p.refresh()
+            except RuntimeError:
+                pass
+
+    def reset_group_look(self, gid):
+        g = self.layout.group(gid)
+        keys = ("theme", "per_row", "labels", "transparency", "corner")
+        if g is None or not any(k in g for k in keys):
+            return
+        self.checkpoint("group defaults")
+        for k in keys:
+            g.pop(k, None)
+        self.commit()
 
     # ------------------------------------------------------------------ name style
     def name_style_dialog(self, gid=None):
@@ -1360,6 +1486,7 @@ class Controller:
         m.addAction("\u270E  Rename", widget.start_rename)          # the same in-place box as the pencil
         if self.permfix_candidates(gid):
             m.addAction("\u26A0  Fix hiding permission...", lambda: self.fix_permissions(gid=gid))
+        m.addAction("\u2699  Group settings...", lambda: self.fence_settings(gid, widget))
         m.addAction("Name style...", lambda: self.name_style_dialog(gid))
         m.addAction("+  Add a tab", lambda: self.add_tab_from_menu(gid, widget))
         if self.edit_mode:

@@ -277,7 +277,7 @@ assert c.layout.prefs["autostart"] is True and integration.autostart_enabled()
 run_cmd = integration.FAKE[integration.RUN_KEY]["ClutterBuster"]
 assert run_cmd.endswith('main.py"') and "--uninstall" not in run_cmd, run_cmd
 u = integration.FAKE[integration.UNINSTALL_KEY]
-assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.1"
+assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.2"
 assert u["UninstallString"].endswith('main.py" --uninstall') and u["NoModify"] == 1 and os.path.exists(u["DisplayIcon"])
 c.set_autostart(False)
 assert not integration.autostart_enabled() and c.layout.prefs["autostart"] is False
@@ -560,7 +560,8 @@ QTest.keyClick(WP.editor, _Qt.Key_Escape)
 assert c.layout.group(pg)["name"] == "PerRow", "Esc cancels"
 tw_ = c.create_group("TileName", edit=False)
 WT = c.widgets[tw_]
-assert WT.on_name(_P(WT.width() / 2, WT.glass_rect().bottom() + 8))
+assert WT.on_name(WT.tile_title_rect().center()), "the name is inside the tile, on top"
+assert WT.tile_title_rect().top() > WT.glass_rect().top() and WT.glass_rect().bottom() <= WT.height()
 assert not WT.on_name(WT.glass_rect().center())
 # ================= dock, lock, hide all, tidy up, gear menu, theme copy =================
 c.set_pref("dock_autohide", False)
@@ -703,7 +704,7 @@ for p_ in (sh1, sh2, sh_bad):
 c.sync_hidden()
 # ================= names in big panels: Auto / Always / Never =================
 from clutterbuster import group_widget as gwm2  # noqa: E402
-assert gwm2.labels_fit(90, 14) and not gwm2.labels_fit(50, 14)
+assert gwm2.labels_fit(90, 14) and gwm2.labels_fit(52, 14) and not gwm2.labels_fit(40, 14)
 assert gwm2.labels_fit(30, 14, "always") and not gwm2.labels_fit(200, 14, "never")
 from PySide6.QtGui import QFont as _QF, QFontMetrics as _QFM  # noqa: E402
 fm_ = _QFM(_QF())
@@ -793,7 +794,7 @@ for _ in range(60):
 assert WT2.name_size() == 8, "min 8 pt"
 from PySide6.QtGui import QWheelEvent  # noqa: E402
 from PySide6.QtCore import QPoint as _Pt  # noqa: E402
-lp_ = _P(WT2.width() / 2, WT2.glass_rect().bottom() + 8)
+lp_ = WT2.tile_title_rect().center()
 ev = QWheelEvent(lp_, WT2.mapToGlobal(lp_), _Pt(0, 0), _Pt(0, 120), _Qt.NoButton, _Qt.ControlModifier,
                  _Qt.NoScrollPhase, False)
 QApplication.sendEvent(WT2, ev)
@@ -869,11 +870,93 @@ strip = WS.tile_strip()
 assert len(strip) == 2, strip
 c.popup.hide()
 _sp = strip[1][1].center().toPoint()
-assert WS.hit(_sp)[0] == "tab:" + st2
+assert WS.hit(_sp)[0] == "tab:" + st2, (WS.hit(_sp), strip, WS.size(), WS.glass_rect(), WS._hover)
 QTest.mouseClick(WS, _Qt.LeftButton, _Qt.NoModifier, _sp)
 assert c.layout.group(stt)["tab"] == st2 and not c.popup.isVisible(), "switched in place, popup stays shut"
 WS.grab().save(os.path.join(tmp, "tile_tab_strip.png"))
 assert all(ir.bottom() <= WS.tile_strip_area().top() for _i, ir in WS.tile_preview_rects())
+# a big tile: name + tab pills on top inside, icons with names, all inside the glass
+from PySide6.QtCore import QRect as _QR  # noqa: E402
+c.resize_group(stt, WS.x(), WS.y(), 324, 344)
+for _k in range(9):
+    c.add_tab(stt, "A very long tab name %d" % _k)
+c.select_tab(stt, st2)
+_gr = WS.glass_rect()
+_segs, _trk = WS.tile_bar()
+assert _segs and _trk.left() >= _gr.left() and _trk.right() <= _gr.right(), (_trk, _gr)
+assert "more" in dict(_segs) and st2 in dict(_segs), "too many: the selected one + '▾'"
+assert WS.tile_strip_area().top() >= WS.tile_title_rect().bottom(), "tabs right under the name"
+assert WS.tile_title_rect().top() < WS.tile_strip_area().top(), "name first, on top"
+WS.grab().save(os.path.join(tmp, "tile_big_tabs.png"))
+c.delete_group(stt)
+stt = c.create_group("Strip Tabs 2", edit=False)
+WS = c.widgets[stt]
+c.add_items(stt, [it for it in all_items if not df.is_url(it)][:6], [])
+c.resize_group(stt, WS.x(), WS.y(), 324, 344)
+_cells, _lines = WS.tile_layout()
+assert _lines >= 1 and len(_cells) == min(6, len(c.layout.group(stt)["items"])), "big tile: names under icons"
+assert all(cl.bottom() <= WS.glass_rect().bottom() + 0.5 for _i, _r, cl in _cells)
+WS.grab().save(os.path.join(tmp, "tile_big_labels.png"))
+c.set_pref("panel_labels", "never")
+assert WS.tile_layout()[1] == 0
+c.set_pref("panel_labels", "auto")
+WS = c.widgets[stt]
+c.resize_group(stt, WS.x(), WS.y(), 96, 116)
+assert WS.tile_layout()[1] == 0, "tiny tile: no names"
+# one click on a tile's icon launches it; empty space opens the popup
+c.resize_group(stt, WS.x(), WS.y(), 324, 344)
+_launched = []
+_orig_launch = c.launch
+c.launch = lambda p_: _launched.append(p_)
+_ic = WS.tile_preview_rects()[0]
+QTest.mouseClick(WS, _Qt.LeftButton, _Qt.NoModifier, _ic[1].center().toPoint())
+assert _launched == [c.layout.group(stt)["items"][_ic[0]]["path"]] and not c.popup.isVisible(), _launched
+c.launch = _orig_launch
+# the gear by the name: this group's own settings
+WS._hover = True
+_nb = WS.name_buttons()
+assert set(_nb) == {"smaller", "bigger", "pencil", "gear"} and WS.hit(_nb["gear"].center())[0] == "gear"
+QTest.mouseClick(WS, _Qt.LeftButton, _Qt.NoModifier, _nb["gear"].center().toPoint())
+fp = c.fence_panel
+assert fp is not None and fp.isVisible()
+fp.grab().save(os.path.join(tmp, "fence_settings.png"))
+_n0 = len(c.undo_stack._items)
+fp.theme.setCurrentIndex(fp.theme.findData("Neon Gamer"))
+assert c.layout.group(stt)["theme"] == "Neon Gamer" and WS.own_theme()["name"] if "name" in (WS.own_theme() or {}) else WS.own_theme() is not None
+fp = c.fence_panel
+fp.per_row.slider.setValue(4)
+fp.per_row.slider.setValue(5)
+assert c.layout.group(stt)["per_row"] == 5 and c.widgets[stt].per_row() == 5
+fp.labels.setCurrentIndex(fp.labels.findData("never"))
+assert c.widgets[stt].tile_layout()[1] == 0
+fp.transp.slider.setValue(80)
+assert c.layout.group(stt)["transparency"] == 80
+assert len(c.undo_stack._items) == _n0 + 4, (len(c.undo_stack._items), _n0)
+c.widgets[stt].grab().save(os.path.join(tmp, "fence_own_theme.png"))
+from clutterbuster.theme import THEME as _TH  # noqa: E402
+_main_fill = _TH["glass_fill"]
+c.widgets[stt].grab()
+assert _TH["glass_fill"] == _main_fill, "the main theme is back after painting"
+c.reset_group_look(stt)
+assert not any(k in c.layout.group(stt) for k in ("theme", "per_row", "labels", "transparency"))
+c.undo()
+assert c.layout.group(stt)["transparency"] == 80
+c.reset_group_look(stt)
+if c.fence_panel is not None:
+    c.fence_panel.close()
+c.set_pref("panel_labels", "auto")
+WS = c.widgets[stt]
+WS._hover = False
+# a grouped item that comes back visible is hidden again by the re-check
+_gp = c.layout.group(stt)["items"][0]["path"]
+assert df.is_hidden(_gp)
+df.set_hidden(_gp, False)
+assert c.visible_grouped() == [_gp] and c.recheck_hidden() == 1 and df.is_hidden(_gp)
+assert c.recheck_hidden() == 0
+c.delete_group(stt)
+c.sync_hidden()
+stt = c.create_group("Strip Tabs 3", edit=False)
+st2 = c.add_tab(stt, "Work")
 c.set_mode(stt, "panel")
 WP = c.widgets[stt]
 assert WP.multi_tab() and len(WP.tab_bar()[0]) == 2, "big panels always show the tab bar with 2+ tabs"
@@ -881,6 +964,91 @@ c.delete_group(stt)
 # ================= settings: Remove button always visible, readable checkboxes =================
 from clutterbuster import glasswin as _gw  # noqa: E402
 assert os.path.isfile(_gw.check_image()) and "image:url(" in _gw.checkbox_qss()
+from PySide6.QtGui import QFontMetrics as _QFM, QFont as _QF  # noqa: E402
+_fm = _QFM(_QF())
+_w = _fm.horizontalAdvance("Monosna") + 1
+assert gwm2.two_lines(_fm, "Monosnap", _w) == ["Mono", "snap"], gwm2.two_lines(_fm, "Monosnap", _w)
+# ================= theme editor: every control works, colours picked INSIDE the window =================
+from clutterbuster import theme_maker as _tm, colorpick as _cp  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
+import clutterbuster.app as _appmod  # noqa: E402
+import clutterbuster.namestyle_dialog as _nsd  # noqa: E402
+import clutterbuster.glass as _gl  # noqa: E402
+import clutterbuster.fence_settings as _fsm  # noqa: E402
+from PySide6.QtWidgets import QPushButton  # noqa: E402
+for _m in (_tm, _appmod, _nsd, _gl, _fsm):
+    assert "QColorDialog" not in open(_m.__file__).read(), _m.__file__
+mk = c.edit_theme("Neon Gamer")
+assert mk.isVisible() and mk.windowFlags() & _Qt.WindowStaysOnTopHint
+mk.pick("tint")
+mk.picker.hex.setText("#123456")
+mk.picker._hex_done()
+assert mk.data["tint"] == "#123456"
+mk.pick("accent")
+mk.picker.hue.setValue(120)
+mk.picker.val.setValue(200)
+assert mk.data["accent"] != "#123456" and _QC(mk.data["accent"]).hsvHue() in range(115, 126)
+mk.picker.swatches[0].click()
+assert mk.data["accent"].lower() == _cp.SWATCHES[0].lower()
+mk.pick("text")
+mk.picker.swatches[9].click()
+assert mk.data["text"].lower() == "#ffffff"
+_builds = []
+_orig_build = _tm.theme.build
+_tm.theme.build = lambda *a, **k: (_builds.append(1), _orig_build(*a, **k))[1]
+for _key, _sl in mk.sliders.items():
+    for _v in range(0, 101, 5):
+        _sl.slider.setValue(_v)                    # 21 quick steps per slider
+_t_end = time.time() + 0.5
+while time.time() < _t_end:
+    app.processEvents()
+    time.sleep(0.02)
+mk.preview.grab()
+mk.preview.grab()
+assert len(_builds) <= 2, f"debounced + cached: {len(_builds)} rebuilds for 63 slider steps"
+_tm.theme.build = _orig_build
+assert mk.data["glow"] == 100 and mk.data["blur"] == 100
+mk.grab().save(os.path.join(tmp, "theme_editor_inline_picker.png"))
+mk.name.setText("")
+_seen_dlg = {}
+QTimer.singleShot(150, lambda: (_seen_dlg.update(info=bool(QApplication.activeModalWidget().windowFlags()
+                                                              & _Qt.WindowStaysOnTopHint)),
+                                QApplication.activeModalWidget().accept()))
+mk.save()
+assert _seen_dlg.get("info") is True and mk.isVisible(), "message in front, editor stays open"
+mk.name.setText("TEST")
+mk.save()
+assert any(t.get("name") == "TEST" for t in c.layout.custom_themes) and not mk.isVisible()
+c.set_theme_choice("TEST")
+# delete a saved theme: from the editor (one confirmation), falls back to Auto, Undo brings it back
+mk2 = c.edit_theme("TEST")
+assert mk2.delete_btn is not None
+QTimer.singleShot(150, lambda: [b for b in QApplication.activeModalWidget().buttons()
+                                if b.text() == "Delete theme"][0].click())
+mk2.delete_btn.click()
+assert not any(t.get("name") == "TEST" for t in c.layout.custom_themes)
+assert c.layout.prefs["theme"] == "auto" and c.undo_stack.next_label() == "delete theme"
+c.undo()
+assert any(t.get("name") == "TEST" for t in c.layout.custom_themes) and c.layout.prefs["theme"] == "TEST"
+assert c.edit_theme("Neon Gamer").delete_btn is None, "built-ins can't be deleted"
+c._maker.close()
+assert c.delete_custom_theme("Neon Gamer", confirm=False) is False
+qm3 = c.show_quick_menu()
+_dels = [b for b in qm3.findChildren(QPushButton) if "Delete" in b.text()]
+assert _dels, "gear menu offers Delete for your own theme"
+QTimer.singleShot(150, lambda: [b for b in QApplication.activeModalWidget().buttons()
+                                if b.text() == "Delete theme"][0].click())
+_dels[0].click()
+assert not any(t.get("name") == "TEST" for t in c.layout.custom_themes) and c.layout.prefs["theme"] == "auto"
+c.set_theme_choice("auto")
+# name style: the colour picker opens inside the dialog
+nd = c.name_style_dialog(None)
+nd.color_btn.click()
+assert nd.picker.isVisible()
+nd.picker.swatches[3].click()
+assert nd.color_hex.lower() == _cp.SWATCHES[3].lower()
+nd.close()
+QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 # ================= quick search shortcut recorder =================
 from clutterbuster import hotkey as _hk, settings as _st  # noqa: E402
 assert c.search_hotkey()["text"] == "Ctrl+Space"

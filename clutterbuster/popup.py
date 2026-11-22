@@ -82,7 +82,7 @@ class GroupPopup(QWidget):
         """(panel w, panel h, cols, rows, cell w, cell h, icon size).
         Columns follow the "Icons per row" slider and icons the "Icon size" slider.
         After you resize the popup in Edit layout its size is kept and icons/rows fit into it."""
-        cols = max(1, int(THEME.get("per_row", 3)))
+        cols = max(1, int((self.group or {}).get("per_row") or THEME.get("per_row", 3)))
         isz = int(THEME["popup_icon"])
         size = self.c.ui.get("popup_size") if hasattr(self.c, "ui") else None
         if size:
@@ -124,7 +124,7 @@ class GroupPopup(QWidget):
         if not self.multi_tab():
             return [], QRectF(), tabsmod.plus_only(pr.right() - PAD - 92, pr.top() + 8 + (46 - tabsmod.TAB_H) / 2)
         return tabsmod.bar_layout(tabsmod.tab_font(self.font(), 9.5), g["tabs"], pr.left() + PAD,
-                                  pr.top() + HEADER_H - 6, pr.width() - 2 * PAD)
+                                  pr.top() + HEADER_H - 6, pr.width() - 2 * PAD, current=g.get("tab"))
 
     def tab_at(self, pos):
         if self.progress < 1:
@@ -192,7 +192,7 @@ class GroupPopup(QWidget):
         return super().eventFilter(obj, ev)
 
     def min_panel_size(self):
-        cols = max(1, int(THEME.get("per_row", 3)))
+        cols = max(1, int((self.group or {}).get("per_row") or THEME.get("per_row", 3)))
         cw, ch = cell_size(MIN_ICON)
         return cols * cw + 2 * PAD, HEADER_H + ch + DOTS_H + PAD
 

@@ -27,22 +27,64 @@ def tab_font(base, pt=9.0):
     return f
 
 
-def bar_layout(font, tabs, x, y, max_w, plus=True):
-    """-> (segments [(tab_id, rect)], track rect, plus rect or None). Squeezes long tab lists."""
-    fm = QFontMetrics(font)
-    pad = 13
+class Segs(list):
+    """[(tab id, rect)] plus the font the bar was fitted with ("more" = the ▾ overflow button)."""
+    font = None
+    hidden = ()
+
+
+MORE = "more"
+
+
+def bar_layout(font, tabs, x, y, max_w, plus=True, current=None, h=TAB_H, min_pt=7.0, dots_ok=False):
+    """Fit the tabs into max_w - always, at any size:
+    1) natural widths, shrinking the font a little if needed;
+    2) equal widths with long names cut short with '…';
+    3) too many: the selected tab + as many as fit, and a '▾' button listing them all.
+    -> (segments, track rect, plus rect or None). An empty list means not even one fits."""
     room = max_w - ((PLUS_W + 6) if plus else 0) - 4
-    widths = [fm.horizontalAdvance(t["name"] or "Tab") + 2 * pad for t in tabs]
-    total = sum(widths)
-    if total > room and total > 0:
-        k = room / total
-        widths = [max(30.0, w * k) for w in widths]
-    track = QRectF(x, y, sum(widths) + 4, TAB_H)
-    segs, cx = [], x + 2
-    for t, w in zip(tabs, widths):
-        segs.append((t["id"], QRectF(cx, y + 2, w, TAB_H - 4)))
+    base_pt = font.pointSizeF() if font.pointSizeF() > 0 else 9.0
+    pts = [base_pt]
+    while pts[-1] - 0.75 >= min_pt:
+        pts.append(pts[-1] - 0.75)
+    segs = Segs()
+    widths, use = None, list(tabs)
+    for pt in pts:
+        f = QFont(font)
+        f.setPointSizeF(pt)
+        fm = QFontMetrics(f)
+        pad = 12 if pt == base_pt else 9
+        nat = [fm.horizontalAdvance(t.get("name") or "Tab") + 2 * pad for t in tabs]
+        if sum(nat) <= room:
+            widths = nat
+            break
+    if widths is None:
+        min_w = fm.horizontalAdvance("Abc\u2026") + 10
+        if min_w * len(tabs) <= room:
+            widths = [room / len(tabs)] * len(tabs)
+        else:
+            more_w = fm.horizontalAdvance("\u25be 99") + 12
+            k = int((room - more_w) // min_w)
+            if dots_ok and k < 2:      # not even two readable pills: the caller shows dots
+                segs.font = f
+                return segs, QRectF(), None
+            k = max(1, k)
+            use = list(tabs[:k])
+            if current and current not in [t["id"] for t in use]:
+                cur = next((t for t in tabs if t["id"] == current), None)
+                if cur is not None:
+                    use[-1] = cur
+            segs.hidden = tuple(t["id"] for t in tabs if t not in use)
+            widths = [(room - more_w) / k] * k + [more_w]
+            use = use + [{"id": MORE, "name": "\u25be %d" % len(segs.hidden)}]
+    segs.font = f
+    track = QRectF(x, y, sum(widths) + 4, h)
+    cx = x + 2
+    for t, w in zip(use, widths):
+        segs.append((t["id"], QRectF(cx, y + 2, w, h - 4)))
         cx += w
-    plus_r = QRectF(track.right() + 6, y + (TAB_H - PLUS_W) / 2, PLUS_W, PLUS_W) if plus else None
+    segs.names = {t["id"]: (t.get("name") or "Tab") for t in use}
+    plus_r = QRectF(track.right() + 6, y + (h - PLUS_W) / 2, PLUS_W, PLUS_W) if plus else None
     return segs, track, plus_r
 
 
@@ -70,12 +112,14 @@ def paint_bar(p, font, tabs, segs, track, plus_r, current, accent, hover=None, d
     dark = is_dark()
     p.save()
     p.setRenderHint(p.RenderHint.Antialiasing)
+    font = getattr(segs, "font", None) or font
     p.setFont(font)
     rr = track.height() / 2
     p.setPen(QPen(QColor(255, 255, 255, 30) if dark else QColor(0, 0, 0, 22), 1))
     p.setBrush(QColor(255, 255, 255, 16) if dark else QColor(20, 24, 40, 18))
     p.drawRoundedRect(track, rr, rr)
     names = {t["id"]: (t["name"] or "Tab") for t in tabs}
+    names.update(getattr(segs, "names", {}))
     fm = QFontMetrics(font)
     for tid, r in segs:
         sel = tid == current
@@ -106,8 +150,8 @@ def paint_bar(p, font, tabs, segs, track, plus_r, current, accent, hover=None, d
             p.setPen(QColor(255, 255, 255) if not dark else qcolor("title_text"))
         else:
             p.setPen(qcolor("panel_subtext"))
-        p.drawText(r.adjusted(6, 0, -6, 0), Qt.AlignCenter,
-                   fm.elidedText(names.get(tid, ""), Qt.ElideRight, int(r.width() - 12)))
+        p.drawText(r.adjusted(4, 0, -4, 0), Qt.AlignCenter,
+                   fm.elidedText(names.get(tid, ""), Qt.ElideRight, int(r.width() - 9)))
     if plus_r is not None:
         paint_plus(p, plus_r, hover == "+")
     p.restore()

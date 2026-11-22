@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QMessageBox
 
 from . import integration, paths
@@ -44,7 +43,8 @@ def confirm(parent=None):
     yes = box.addButton("Remove Clutter Buster", QMessageBox.AcceptRole)
     box.addButton("Cancel", QMessageBox.RejectRole)
     yes.setStyleSheet("background:#e5293b;color:white;font-weight:bold;padding:4px 12px;border-radius:4px;")
-    box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    from .glass import front_dialog
+    front_dialog(box)
     box.exec()
     return box.clickedButton() is yes, cb.isChecked()
 
