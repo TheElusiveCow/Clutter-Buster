@@ -13,7 +13,7 @@ import shutil
 import time
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QImageReader, QPixmap
+from PySide6.QtGui import QColor, QImageReader, QPainter, QPainterPath, QPixmap
 
 from . import paths
 from .theme import THEME
@@ -91,9 +91,38 @@ def pixmap(path, size):
         if src.isNull():
             pm = QPixmap()
         else:
-            pm = src.scaled(int(size), int(size), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm = soften(src.scaled(int(size), int(size), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         _cache[key] = pm
     return pm
+
+
+def soften(pm):
+    """Rounded corners (~25 %) and a feathered, fading edge - no hard square photo edges."""
+    w, h = pm.width(), pm.height()
+    if w < 4 or h < 4:
+        return pm
+    mask = QPixmap(w, h)
+    mask.fill(Qt.transparent)
+    mp = QPainter(mask)
+    mp.setRenderHint(QPainter.Antialiasing)
+    mp.setCompositionMode(QPainter.CompositionMode_Source)
+    m = min(w, h)
+    feather = max(2.0, m * 0.08)
+    steps = 8
+    for i in range(steps):
+        inset = feather * i / steps
+        r = QRectF(inset, inset, w - 2 * inset, h - 2 * inset)
+        rad = max(1.0, m * 0.25 - inset)
+        path = QPainterPath()
+        path.addRoundedRect(r, rad, rad)
+        mp.fillPath(path, QColor(0, 0, 0, int(255 * (i + 1) / steps)))
+    mp.end()
+    out = QPixmap(pm)
+    p = QPainter(out)
+    p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    p.drawPixmap(0, 0, mask)
+    p.end()
+    return out
 
 
 def place(area, avoid, max_frac=0.32, lo=26, hi=120):
@@ -123,7 +152,7 @@ def draw(p, glass, group, avoid=(), margin=8):
     dw, dh = w * k, h * k
     target = QRectF(r.right() - dw, r.bottom() - dh, dw, dh)
     p.save()
-    p.setOpacity(0.9 if free else 0.45)
+    p.setOpacity(0.82 if free else 0.42)
     p.drawPixmap(target, pm, QRectF(0, 0, w, h))
     p.restore()
     return target

@@ -122,9 +122,13 @@ class GroupPopup(QWidget):
         if g is None:
             return [], QRectF(), None
         if not self.multi_tab():
-            return [], QRectF(), tabsmod.plus_only(pr.right() - PAD - 92, pr.top() + 8 + (46 - tabsmod.TAB_H) / 2)
+            return [], QRectF(), tabsmod.plus_only(pr.right() - PAD - 128, pr.top() + 8 + (46 - tabsmod.TAB_H) / 2)
         return tabsmod.bar_layout(tabsmod.tab_font(self.font(), 9.5), g["tabs"], pr.left() + PAD,
                                   pr.top() + HEADER_H - 6, pr.width() - 2 * PAD, current=g.get("tab"))
+
+    def close_rect(self):
+        pr = self.panel_rect()
+        return QRectF(pr.right() - PAD - 30, pr.top() + 14, 30, 30)
 
     def tab_at(self, pos):
         if self.progress < 1:
@@ -384,7 +388,7 @@ class GroupPopup(QWidget):
                 it = g["items"][idx]
                 cell = self.item_rect(k, shift)
                 card = cell.adjusted(5, 4, -5, -4)
-                hot = (idx == self._hover_item and t >= 1) or idx == self._drop_item
+                hot = (idx == self._hover_item and t >= 1) or idx == self._drop_item or idx == self._selected
                 p.setPen(QPen(acc if idx == self._drop_item else qcolor("card_border"), 1.6 if hot else 1))
                 p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
                 p.drawRoundedRect(card, rad(16), rad(16))
@@ -413,6 +417,15 @@ class GroupPopup(QWidget):
             for i, dr in enumerate(self.dot_rects()):
                 p.setBrush(qcolor("dot_on" if i == self.page else "dot_off"))
                 p.drawEllipse(dr.center(), 4, 4)
+        # the X (close) button, top-right
+        xr = self.close_rect()
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor("card_fill_hot"))
+        p.drawEllipse(xr)
+        p.setPen(QPen(qcolor("title_text"), 2.2, Qt.SolidLine, Qt.RoundCap))
+        c, k = xr.center(), 6.5
+        p.drawLine(QPointF(c.x() - k, c.y() - k), QPointF(c.x() + k, c.y() + k))
+        p.drawLine(QPointF(c.x() - k, c.y() + k), QPointF(c.x() + k, c.y() - k))
         if self.c.edit_mode and t >= 1:
             draw_edit_outline(p, pr, rr, acc)
         p.end()
@@ -484,6 +497,9 @@ class GroupPopup(QWidget):
         if not self.panel_rect().contains(pos):
             self.close_animated()  # the shadow margin counts as "outside"
             return
+        if e.button() == Qt.LeftButton and self.progress >= 1 and self.close_rect().contains(pos):
+            self.close_animated()  # the X button
+            return
         t = self.tab_at(pos)
         if t is not None and e.button() == Qt.LeftButton:
             if t == "+":
@@ -554,16 +570,12 @@ class GroupPopup(QWidget):
             self._selected = pressed            # list view: click selects, double-click opens
             self.update()
             return
-        if (not was_drag and pressed is not None and pressed == self.item_at(e.position())
-                and not self.c.edit_mode):
-            g = self.group
-            if g and pressed < len(g["items"]):
-                path = g["items"][pressed]["path"]
-                self.close_animated()
-                self.c.launch(path)
+        if not was_drag and pressed is not None:
+            self._selected = pressed                # one click selects; double-click opens
+            self.update()
 
     def mouseDoubleClickEvent(self, e):
-        if e.button() != Qt.LeftButton or self.view() != "list" or self.c.edit_mode:
+        if e.button() != Qt.LeftButton or self.c.edit_mode:
             return
         idx = self.item_at(e.position())
         g = self.group

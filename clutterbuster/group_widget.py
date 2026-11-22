@@ -27,7 +27,7 @@ DRAG_THRESHOLD = 6
 EDGE = 16          # resize zone along every edge (logical px - Windows scales it, ~24 px at 150%)
 CORNER = 24        # bottom-right resize grip
 LBL = 40      # room under a small tile for its name (bigger names, Brian asked)
-TILE_DEFAULT, TILE_MIN, TILE_MAX = (96, 116), (56, 70), (320, 344)
+TILE_DEFAULT, TILE_MIN, TILE_MAX = (96, 116), (56, 70), (4000, 4000)   # no real cap: as big as the screen
 TILE_PT, PANEL_PT = 11.0, 12.5   # default name sizes in points (Qt scales points with Windows DPI)
 PANEL_DEFAULT, PANEL_MIN = (340, 250), (150, 110)
 TITLE_H = 34
@@ -139,14 +139,10 @@ class GroupWidget(DesktopLayerWindow):
             return {}
         r = self.glass_rect()
         sz = 18
-        if self.mode == "tile":
-            tr = self.tile_title_rect()
-            x0 = max(tr.left(), tr.right() - 4 * sz - 6)
-            y = tr.center().y() - sz / 2
-        else:
-            tw = QFontMetrics(self.name_font()).horizontalAdvance(g["name"])
-            x0 = min(r.left() + 30 + tw + 8, self.name_right() - 4 * sz - 10)
-            y = r.top() + (TITLE_H - sz) / 2 + 1
+        # a small strip along the BOTTOM edge (Brian: on top they covered the name),
+        # kept clear of the 16px resize zones
+        x0 = r.left() + 16
+        y = r.bottom() - sz - 14
         return {k: QRectF(x0 + i * (sz + 2), y, sz, sz) for i, k in enumerate(("smaller", "bigger", "pencil", "gear"))}
 
     def pencil_rect(self):
@@ -363,6 +359,12 @@ class GroupWidget(DesktopLayerWindow):
             draw_warn(p, QPointF(r.left() + 4, r.top() + 4), 8)
 
     def paint_name_buttons(self, p):
+        bs = list(self.name_buttons().values())
+        if bs:
+            strip = bs[0].united(bs[-1]).adjusted(-5, -4, 5, 4)
+            p.setPen(Qt.NoPen)
+            p.setBrush(qcolor("bubble_fill") if is_dark() else QColor(255, 255, 255, 220))
+            p.drawRoundedRect(strip, strip.height() / 2, strip.height() / 2)
         for k, br in self.name_buttons().items():
             hot = self._hover_button == k
             if k == "pencil":
@@ -457,7 +459,7 @@ class GroupWidget(DesktopLayerWindow):
         g = self.group
         if segs:
             tabsmod.paint_bar(p, self.strip_font(), g["tabs"], segs, track, None, g.get("tab"), acc,
-                              hover=self._hover_tab)
+                              hover=self._hover_tab, drop=self._drop_tab)
             return
         strip = self.tile_strip()
         if not strip:
@@ -465,7 +467,7 @@ class GroupWidget(DesktopLayerWindow):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         for tid, rr in strip:
-            if tid == g.get("tab"):
+            if tid == g.get("tab") or tid == self._drop_tab:
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(acc))
             else:
@@ -551,9 +553,6 @@ class GroupWidget(DesktopLayerWindow):
         if not (self.editor and self.editor.isVisible()):
             st = namestyle.resolve(self.c.layout, g)
             tr = self.tile_title_rect()
-            if self._hover:            # leave room for the A- A+ pencil buttons on the right
-                bw = 4 * 20 + 6
-                tr = tr.adjusted(bw, 0, -bw, 0) if tr.width() > 2 * bw + 30 else tr.adjusted(0, 0, -bw, 0)
             namestyle.draw(p, tr, g["name"], Qt.AlignHCenter | Qt.AlignVCenter, st, self.font(), TILE_PT, False,
                            "panel_title_text", default_effect="shadow" if is_dark() else "none",
                            elide_w=tr.width())
@@ -564,7 +563,7 @@ class GroupWidget(DesktopLayerWindow):
         lfm = QFontMetrics(lf)
         for idx, ir, cell in cells:
             it = g["items"][idx]
-            if idx == self._hover_item:                      # hover: a soft highlight = clickable
+            if idx == self._hover_item or idx == self._selected:   # hover / selected highlight
                 hl = (QRectF(cell.left() + 2, ir.top() - 3, cell.width() - 4,
                              (cell.bottom() if lines else ir.bottom() + 3) - ir.top() + 3) if lines
                       else ir.adjusted(-4, -4, 4, 4))
@@ -627,7 +626,7 @@ class GroupWidget(DesktopLayerWindow):
             for idx, ir in self.panel_item_rects():
                 it = g["items"][idx]
                 card = ir.adjusted(4, 4, -4, -4)
-                hot = idx == self._hover_item or idx == self._drop_item
+                hot = idx == self._hover_item or idx == self._drop_item or idx == self._selected
                 p.setPen(QPen(acc if idx == self._drop_item else qcolor("card_border"), 1.5 if hot else 1))
                 p.setBrush(qcolor("card_fill_hot" if hot else "card_fill"))
                 p.drawRoundedRect(card, rad(max(6, cell * 0.16)), rad(max(6, cell * 0.16)))
@@ -831,11 +830,9 @@ class GroupWidget(DesktopLayerWindow):
             elif kind in ("tile", "title") and self.on_name(e.position()):
                 # the name: wait a moment - a double-click renames instead of opening
                 self._open_timer.start(QApplication.doubleClickInterval())
-            elif kind == "tile" and self._press_item is not None and not self.c.edit_mode:
-                g = self.group                              # an icon on a small tile: launch it
-                if g and self._press_item < len(g["items"]):
-                    self.c.clear_badge(self.gid)
-                    self.c.launch(g["items"][self._press_item]["path"])
+            elif kind == "tile" and self._press_item is not None:
+                self._selected = self._press_item           # one click selects; double-click opens
+                self._dirty = True
             elif kind == "tile":
                 self.c.open_group(self.gid)                 # empty space opens a small tile
             elif kind == "title":
@@ -850,11 +847,9 @@ class GroupWidget(DesktopLayerWindow):
                 self.c.group_menu(self.gid, self, self.mapToGlobal(self.menu_rect().bottomLeft().toPoint()))
             elif kind == "item" and self.view() == "list":    # list view: click selects, double-click opens
                 self._selected = self._press_item
-            elif kind == "item" and not self.c.edit_mode:   # edit mode never launches things
-                g = self.group
-                if g and self._press_item is not None and self._press_item < len(g["items"]):
-                    self.c.clear_badge(self.gid)
-                    self.c.launch(g["items"][self._press_item]["path"])   # big panel: click an item
+            elif kind == "item":                             # one click selects; double-click opens
+                self._selected = self._press_item
+                self._dirty = True
         self.update()
 
     def on_name(self, pos):
@@ -870,9 +865,9 @@ class GroupWidget(DesktopLayerWindow):
             self._open_timer.stop()
             self.start_rename()                          # Enter saves, Esc cancels (one undo step)
             return
-        if e.button() != Qt.LeftButton or self.view() != "list" or self.c.edit_mode:
+        if e.button() != Qt.LeftButton or self.c.edit_mode:
             return
-        idx = self.item_at(e.position())
+        idx = self.tile_item_at(e.position()) if self.mode == "tile" else self.item_at(e.position())
         g = self.group
         if idx is not None and g and idx < len(g["items"]):
             self.c.clear_badge(self.gid)
@@ -917,12 +912,13 @@ class GroupWidget(DesktopLayerWindow):
     def dragMoveEvent(self, e):
         if not accept_drag(e):
             return
-        t = self.tab_at(e.position())
-        t = t if t and t != "+" else None
-        di = None if t else (self.item_at(e.position()) if read_item(e.mimeData()) else None)
+        t = self.tab_at(e.position()) if self.mode == "panel" else self.tile_tab_at(e.position())
+        t = t if t and t not in ("+", "more") else None
+        di = None if (t or self.mode != "panel") else (self.item_at(e.position()) if read_item(e.mimeData()) else None)
         if di != self._drop_item or t != self._drop_tab:
             self._drop_item = di
-            self._drop_tab = t
+            self._drop_tab = t           # that tab pill lights up; dropping moves the item there
+            self._dirty = True
             self.update()
 
     def dragLeaveEvent(self, e):

@@ -909,7 +909,25 @@ _orig_launch = c.launch
 c.launch = lambda p_: _launched.append(p_)
 _ic = WS.tile_preview_rects()[0]
 QTest.mouseClick(WS, _Qt.LeftButton, _Qt.NoModifier, _ic[1].center().toPoint())
+assert _launched == [] and WS._selected == _ic[0] and not c.popup.isVisible(), "one click only selects"
+QTest.mouseDClick(WS, _Qt.LeftButton, _Qt.NoModifier, _ic[1].center().toPoint())
 assert _launched == [c.layout.group(stt)["items"][_ic[0]]["path"]] and not c.popup.isVisible(), _launched
+# drag an icon onto another tab pill of the tile: it lights up (moving is handle_drop's job)
+from PySide6.QtCore import QMimeData as _QMD  # noqa: E402
+_strip = WS.tile_strip()
+if _strip:
+    from clutterbuster.glass import accept_drag as _ad  # noqa: F401,E402
+    _tid = [t for t, _r in _strip if t != c.layout.group(stt).get("tab")][0]
+    assert WS.tile_tab_at(dict(_strip)[_tid].center()) == _tid
+# the popup: X button closes it; one click selects, double-click opens
+c.open_group(stt)
+c.popup.progress = 1.0
+QTest.mouseClick(c.popup, _Qt.LeftButton, _Qt.NoModifier, c.popup.close_rect().center().toPoint())
+assert c.popup.closing or not c.popup.isVisible(), "X closes the popup"
+# no size cap: a tile can be as big as the screen
+c.resize_group(stt, WS.x(), WS.y(), 700, 720)
+assert tuple(c.layout.group(stt)["tile_size"]) == (700, 720), c.layout.group(stt)["tile_size"]
+c.resize_group(stt, WS.x(), WS.y(), 324, 344)
 c.launch = _orig_launch
 # the gear by the name: this group's own settings
 WS._hover = True
