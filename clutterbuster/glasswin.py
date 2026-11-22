@@ -67,6 +67,33 @@ def checkbox_qss():
     """
 
 
+def _lum(c):
+    return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255
+
+
+def menu_qss():
+    """Solid, readable menus and drop-down lists for ANY theme (custom ones too): colours come
+    from the theme, with a contrast check - if text and background are too alike, it falls
+    back to dark glass with white text. (Menus used to inherit 'transparent' and showed black.)"""
+    bg = tuple(THEME.get("popup_fill", (30, 32, 48, 255))[:3])
+    fg = tuple(THEME.get("panel_text", (255, 255, 255, 255))[:3])
+    if abs(_lum(bg) - _lum(fg)) < 0.45:
+        bg, fg = (30, 32, 48), (255, 255, 255)
+    acc = THEME.get("default_accent", "#0A84FF")
+    sel_fg = "#FFFFFF" if _lum(QColor(acc).getRgb()[:3]) < 0.6 else "#000000"
+    b, f = "rgb(%d,%d,%d)" % bg, "rgb(%d,%d,%d)" % fg
+    line = "rgba(255,255,255,40)" if _lum(bg) < 0.5 else "rgba(0,0,0,40)"
+    return f"""
+    QMenu {{ background:{b}; color:{f}; border:1px solid {line}; padding:4px; }}
+    QMenu::item {{ background:transparent; color:{f}; padding:6px 22px 6px 22px; border-radius:6px; }}
+    QMenu::item:selected {{ background:{acc}; color:{sel_fg}; }}
+    QMenu::item:disabled {{ color:{line}; }}
+    QMenu::separator {{ height:1px; background:{line}; margin:4px 8px; }}
+    QComboBox QAbstractItemView, QListView#comboList {{ background:{b}; color:{f};
+        selection-background-color:{acc}; selection-color:{sel_fg}; border:1px solid {line}; outline:0; }}
+    """
+
+
 def qss():
     """Qt style sheet for buttons, sliders, lists... matching the current theme."""
     acc = THEME["default_accent"]
@@ -105,6 +132,7 @@ def qss():
     QLineEdit {{ background:{field}; border:1px solid {border}; border-radius:7px; padding:5px 8px; }}
     QScrollArea#page {{ background:transparent; border:none; }}
     QScrollArea#page > QWidget > QWidget {{ background:transparent; }}
+    {menu_qss()}
     QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
     QScrollBar::handle:vertical {{ background:{border}; border-radius:4px; min-height:30px; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}

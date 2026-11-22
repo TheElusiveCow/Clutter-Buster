@@ -489,14 +489,18 @@ class GroupWidget(DesktopLayerWindow):
         if g is None or self.mode != "tile":
             return [], 0
         r = self.glass_rect()
-        n = max(2, min(6, self.per_row()))      # follows "Icons per row" (this group's own, if set)
+        per = max(2, min(6, self.per_row()))    # follows "Icons per row" (this group's own, if set)
         strip = self.tile_strip_area()
         top = (strip.bottom() if strip is not None else self.tile_title_rect().bottom()) + 5
-        pad = max(6.0, r.width() * 0.06)
+        side = min(r.width(), r.height())        # icon size comes from the SHORT side, so a wider
+        pad = max(6.0, side * 0.06)              # fence gets more columns, not bigger icons
         area = QRectF(r.left() + pad, top, r.width() - 2 * pad, r.bottom() - pad * 0.8 - top)
-        shown = (tab_indices(g) if g.get("tabs") else list(range(len(g["items"]))))[:n * n]
+        cw0 = max(20.0, (side - 2 * pad) / per)
+        n = max(per, min(24, int(area.width() // cw0)))
+        max_rows = max(per, int(max(0.0, area.height()) // cw0))
+        shown = (tab_indices(g) if g.get("tabs") else list(range(len(g["items"]))))[:n * max_rows]
         lh = QFontMetrics(self.tile_label_font()).height()
-        cw = area.width() / n
+        cw = min(area.width() / n, cw0) if n > per else area.width() / n
         rows = max(1, math.ceil(len(shown) / n))
         ch = min(area.height() / rows, cw + 2 * lh + 6)
         mode = self.labels_mode()
@@ -1177,6 +1181,19 @@ def resize_rect(g0, d, e, mode):
     only widened the transparent window and the square slid sideways - it looked like moving.)"""
     g0 = QRect(g0)
     if mode == "tile":
+        # every edge moves on its own: left/right = width only, top/bottom = height only,
+        # corners = both (Brian: no forced square). Icons keep their size; wider = more columns.
+        mw, mh = TILE_MIN
+        if e & 1:
+            g0.setLeft(min(g0.left() + d.x(), g0.right() - mw))
+        if e & 2:
+            g0.setRight(max(g0.right() + d.x(), g0.left() + mw))
+        if e & 4:
+            g0.setTop(min(g0.top() + d.y(), g0.bottom() - mh))
+        if e & 8:
+            g0.setBottom(max(g0.bottom() + d.y(), g0.top() + mh))
+        return g0
+    if mode == "tile_square":
         s0 = min(g0.width() - 20, g0.height() - LBL)
         deltas = []
         if e & 1:

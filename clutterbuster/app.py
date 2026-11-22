@@ -322,10 +322,19 @@ class Controller:
         out += [w for w in (self.toolbar, self.settings_win) if w is not None]
         return [w for w in out if w is not None]
 
+    def style_menus(self):
+        """Every QMenu / drop-down in the app: readable colours from the current theme."""
+        from .glasswin import menu_qss
+        try:
+            self.app.setStyleSheet(menu_qss())
+        except Exception:
+            log.exception("Could not style menus")
+
     def apply_theme(self, repaint=True):
         prefs = self.layout.prefs
         self.theme_name = theme.resolve(prefs.get("theme", theme.AUTO), self.layout.custom_themes)
         theme.apply(self.theme_name, self.ui, self.layout.custom_themes)
+        self.style_menus()
         if not repaint:
             return
         for w in self.all_windows():

@@ -397,11 +397,11 @@ assert gw_mod.edges_for(48, 50, 96, 112) == 0
 # small tile: dragging the right edge makes the whole square bigger (it used to slide sideways)
 r0 = _QR(400, 300, 96, 116)
 r1 = gw_mod.resize_rect(r0, _QP(40, 0), 2, "tile")
-assert r1.left() == 400 and r1.top() == 300 and r1.width() == 136 and r1.height() == 156, r1
+assert r1.left() == 400 and r1.top() == 300 and r1.width() == 136 and r1.height() == 116, r1   # width only
 r2 = gw_mod.resize_rect(r0, _QP(-40, 0), 1, "tile")
-assert r2.right() == r0.right() and r2.width() == 136, r2
+assert r2.right() == r0.right() and r2.width() == 136 and r2.height() == 116, r2
 r3 = gw_mod.resize_rect(r0, _QP(0, -500), 8, "tile")
-assert r3.width() == gw_mod.TILE_MIN[0] and r3.top() == 300
+assert abs(r3.height() - gw_mod.TILE_MIN[1]) <= 1 and r3.top() == 300 and r3.width() == 96, r3
 r4 = gw_mod.resize_rect(_QR(100, 100, 340, 250), _QP(60, 30), 10, "panel")
 assert (r4.width(), r4.height(), r4.left(), r4.top()) == (400, 280, 100, 100)
 # press decision == cursor decision, for tiles and panels, all over the widget
@@ -928,6 +928,25 @@ assert c.popup.closing or not c.popup.isVisible(), "X closes the popup"
 c.resize_group(stt, WS.x(), WS.y(), 700, 720)
 assert tuple(c.layout.group(stt)["tile_size"]) == (700, 720), c.layout.group(stt)["tile_size"]
 c.resize_group(stt, WS.x(), WS.y(), 324, 344)
+# width-only resize: dragging the right edge keeps the height; wider = more columns, same icon size
+from clutterbuster.group_widget import resize_rect as _rr  # noqa: E402
+_g0 = QRect(100, 100, 324, 344)
+assert _rr(_g0, QPoint(200, 0), 2, "tile") == QRect(100, 100, 524, 344)
+assert _rr(_g0, QPoint(0, 90), 8, "tile") == QRect(100, 100, 324, 434)
+WS = c.widgets[stt]
+_isz0 = WS.tile_layout()[0][0][1].width()
+c.resize_group(stt, WS.x(), WS.y(), 700, 344)
+WS = c.widgets[stt]
+assert abs(WS.tile_layout()[0][0][1].width() - _isz0) <= _isz0 * 0.1, ("icons keep their size", _isz0, WS.tile_layout()[0][0], WS.glass_rect(), WS.per_row(), len(WS.tile_layout()[0]))
+c.resize_group(stt, WS.x(), WS.y(), 324, 344)
+# menus are readable on every theme (custom ones too)
+from clutterbuster.glasswin import menu_qss as _mq  # noqa: E402
+c.save_custom_theme({"name": "Inky", "accent": "#00D2FF", "tint": "#050505", "text": "#0A0A0A",
+                     "blur": 50, "glow": 0, "roundness": 55})
+c.set_theme_choice("Inky")
+assert "rgb(30,32,48)" in _mq() and "rgb(255,255,255)" in app.styleSheet(), "black-on-black falls back"
+c.set_theme_choice("Clean White")
+assert "QMenu" in app.styleSheet()
 c.launch = _orig_launch
 # the gear by the name: this group's own settings
 WS._hover = True
