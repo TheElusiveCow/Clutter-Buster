@@ -6,17 +6,17 @@ with a name. Saved themes show up in the theme list.
 """
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QRadialGradient
-from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QVBoxLayout, QWidget)
 
-from . import theme
+from . import corners, decor, theme
 from .colorpick import InlineColorPicker
 from .glass import draw_glass, draw_neon, draw_shadow, info
 from .glasswin import GlassPanel, SliderRow, color_button, set_button_color
 from .theme import THEME, qcolor, rad
 
 DEFAULT_CUSTOM = {"name": "", "accent": "#00D2FF", "tint": "#1A1240", "text": "#F2F0FF",
-                  "blur": 55, "glow": 70, "roundness": 55}
+                  "blur": 55, "glow": 70, "roundness": 55, "decor": "", "corner": ""}
 ICON_COLORS = ["#FF3B7F", "#0A84FF", "#30D158", "#FF9F0A", "#9B5CFF", "#40C8E0", "#FFD60A", "#FF453A", "#8E8E93"]
 
 
@@ -95,6 +95,7 @@ class ThemePreview(QWidget):
         if not THEME.get("glow"):
             p.setPen(QPen(QColor(acc.red(), acc.green(), acc.blue(), 120), 1.5))
             p.drawRoundedRect(tr.adjusted(1, 1, -1, -1), trad - 1, trad - 1)
+        corners.draw(p, tr, {}, [], margin=3)
         for i in range(9):
             r_, c_ = divmod(i, 3)
             ir = QRectF(tr.left() + 11 + c_ * 18, tr.top() + 11 + r_ * 18, 14, 14)
@@ -139,6 +140,7 @@ class ThemePreview(QWidget):
             p.drawRoundedRect(ir, rad(7), rad(7))
             p.setPen(qcolor("panel_text"))
             p.drawText(QRectF(card.left(), ir.bottom() + 2, card.width(), 14), Qt.AlignHCenter, names[k])
+        corners.draw(p, pr, {}, [], margin=8)
         p.end()
 
 
@@ -150,7 +152,7 @@ class ThemeMaker(GlassPanel):
         self.data = dict(DEFAULT_CUSTOM)
         if start:
             self.data.update(start)
-        self.setFixedSize(880, 640)
+        self.setFixedSize(880, 700)
         outer = QVBoxLayout(self.body)
         outer.setContentsMargins(18, 10, 18, 14)
         outer.setSpacing(10)
@@ -191,6 +193,26 @@ class ThemeMaker(GlassPanel):
             s.changed.connect(self.on_slider)
             self.sliders[key] = s
             left.addWidget(s)
+        # decoration + corner picture (the fun themes' extras)
+        extra = QGridLayout()
+        extra.setHorizontalSpacing(10)
+        extra.setVerticalSpacing(6)
+        extra.addWidget(QLabel("Decoration"), 0, 0)
+        self.decor = QComboBox()
+        for key, label in decor.STYLES:
+            self.decor.addItem(label, key)
+        self.decor.setCurrentIndex(max(0, self.decor.findData(self.data.get("decor") or "")))
+        self.decor.currentIndexChanged.connect(lambda _i: self.on_extra("decor", self.decor.currentData()))
+        extra.addWidget(self.decor, 0, 1)
+        extra.addWidget(QLabel("Corner picture"), 1, 0)
+        self.corner = QComboBox()
+        self.corner.addItem("None", "")
+        for key, label in corners.ASSETS:
+            self.corner.addItem(label, key)
+        self.corner.setCurrentIndex(max(0, self.corner.findData(self.data.get("corner") or "")))
+        self.corner.currentIndexChanged.connect(lambda _i: self.on_extra("corner", self.corner.currentData()))
+        extra.addWidget(self.corner, 1, 1)
+        left.addLayout(extra)
         left.addStretch(1)
         nl = QLabel("Name")
         left.addWidget(nl)
@@ -252,6 +274,10 @@ class ThemeMaker(GlassPanel):
     def on_slider(self, key, v):
         self.data[key] = int(v)
         self._debounce.start(100)                     # redraw once the slider settles a little
+
+    def on_extra(self, key, value):
+        self.data[key] = value or ""
+        self._debounce.start(50)
 
     def changed(self):
         self._preview_cache = None

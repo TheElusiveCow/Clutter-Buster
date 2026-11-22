@@ -81,6 +81,10 @@ class QuickMenu(GlassPanel):
             trow.addWidget(dele)
         lay.addLayout(trow)
 
+        tb = _btn("\u2316  Reset toolbar position", "Put the toolbar back in the middle of the top edge")
+        tb.clicked.connect(lambda: self._do(self.c.reset_toolbar))
+        lay.addWidget(tb)
+
         lay.addWidget(self._label("Groups"))
         self.hide_cb = QCheckBox("Hide all groups (their items stay hidden)")
         self.hide_cb.setCursor(Qt.PointingHandCursor)

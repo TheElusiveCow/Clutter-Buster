@@ -6,7 +6,7 @@ from PySide6.QtCore import QByteArray, QMimeData, QPoint, QPointF, QRectF, QSize
 from PySide6.QtGui import QBrush, QColor, QDrag, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QMessageBox, QWidget
 
-from . import desktop_layer
+from . import decor, desktop_layer
 from .theme import THEME, neon_gradient, qcolor, rgb_gradient
 
 
@@ -34,6 +34,7 @@ def draw_glass(p, rect, radius, fill_key="glass_fill", hover=False, glow=False, 
     """A frosted white rounded shape with a thin RGB strip along its top edge."""
     p.save()
     path = rounded(rect, radius)
+    decor.before(p, path, rect)
     p.fillPath(path, qcolor("glass_fill_hover" if hover else fill_key))
     # a soft shine on the upper half
     shine = QLinearGradient(0, rect.top(), 0, rect.top() + rect.height() * 0.6)
@@ -47,10 +48,15 @@ def draw_glass(p, rect, radius, fill_key="glass_fill", hover=False, glow=False, 
         alpha = int(150 + 105 * THEME.get("glow_strength", 0.6))
         p.fillRect(QRectF(rect.x(), rect.y(), rect.width(), h),
                    rgb_gradient(rect.left(), 0, rect.right(), 0, min(255, alpha)))
+    if THEME.get("decor"):
+        decor.inside(p, path, rect, radius)
     p.setClipping(False)
-    p.setPen(QPen(qcolor("glass_border"), 1.0))
+    bw = float(THEME.get("border_w", 1.0))
+    p.setPen(QPen(qcolor("glass_border"), bw))
     p.setBrush(Qt.NoBrush)
-    p.drawPath(path)
+    p.drawPath(rounded(rect.adjusted(bw / 2 - 0.5, bw / 2 - 0.5, 0.5 - bw / 2, 0.5 - bw / 2), radius) if bw > 1.5 else path)
+    if THEME.get("decor"):
+        decor.edge(p, path, rect, radius)
     if glow:  # accent glow while something is dragged over
         r, g, b, _ = THEME["accent"]
         for i in range(1, 5):

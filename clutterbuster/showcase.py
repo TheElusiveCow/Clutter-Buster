@@ -88,10 +88,32 @@ class Backdrop(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setGeometry(QApplication.primaryScreen().geometry())
 
+    PALETTES = {   # pretend wallpapers for the fun-theme pictures (top, middle, bottom)
+        "Space": ((6, 6, 22), (30, 16, 70), (4, 10, 30)),
+        "Holiday": ((40, 10, 12), (70, 22, 18), (20, 8, 8)),
+        "Winter": ((120, 160, 205), (170, 200, 230), (80, 110, 150)),
+        "Springfield": ((90, 170, 245), (150, 205, 250), (110, 180, 90)),
+        "Doghouse": ((150, 200, 235), (190, 225, 245), (110, 170, 80)),
+        "Cozy Cabin": ((60, 50, 30), (120, 90, 50), (30, 40, 25)),
+    }
+
     def paintEvent(self, _e):
         p = QPainter(self)
         w, h = self.width(), self.height()
         g = QLinearGradient(0, 0, 0, h)
+        pal = self.PALETTES.get(os.environ.get("CLUTTERBUSTER_SHOWCASE_THEME", ""))
+        if pal:
+            for k, col in zip((0, 0.6, 1), pal):
+                g.setColorAt(k, QColor(*col))
+            p.fillRect(self.rect(), g)
+            if os.environ.get("CLUTTERBUSTER_SHOWCASE_THEME") == "Space":
+                import random
+                rnd = random.Random(7)
+                for _ in range(500):
+                    a = rnd.randint(60, 220)
+                    p.fillRect(int(rnd.random() * w), int(rnd.random() * h), 2, 2, QColor(255, 255, 255, a))
+            p.end()
+            return
         g.setColorAt(0, QColor(14, 12, 40))
         g.setColorAt(0.6, QColor(45, 20, 85))
         g.setColorAt(1, QColor(8, 22, 40))
@@ -159,6 +181,8 @@ def run_showcase(out_png):
 
     if os.environ.get("CLUTTERBUSTER_SHOWCASE_SCENE") == "tabs":
         return _tabs_scene(app, c, demo, out_png, shot, log, shutil)
+    if os.environ.get("CLUTTERBUSTER_SHOWCASE_SCENE") == "fun":
+        return _fun_scene(app, c, demo, out_png, shot, log, shutil)
 
     def step1():
         for w in [c.search, c.actions, c.dock, *c.widgets.values()]:
@@ -240,6 +264,68 @@ def _tabs_scene(app, c, demo, out_png, shot, log, shutil):
         if c.quick_menu is not None:
             c.quick_menu.close()
         log.info("showcase: tabs scene done (theme %s)", c.theme_name)
+        app.quit()
+
+    QTimer.singleShot(900, step1)
+    QTimer.singleShot(20000, app.quit)
+    rc = app.exec()
+    shutil.rmtree(demo, ignore_errors=True)
+    return rc
+
+
+def _fun_scene(app, c, demo, out_png, shot, log, shutil):
+    """v0.6 demo: a fun theme with corner pictures on tiles and a panel with tabs, and the toolbar
+    as a pill or tucked into a corner (CLUTTERBUSTER_SHOWCASE_CORNER=tr). Pretend items only."""
+    from .store import new_tab
+    av = c.avail()
+    for gid in list(c.widgets):            # start from just our own demo groups
+        c.delete_group(gid)
+    files = [{"path": os.path.join(demo, n)} for n in
+             ("Budget 2026.xlsx", "Notes.txt", "Recipe.pdf", "Holiday photo.jpg", "Old Projects", "Screenshots")]
+
+    def group(name, x, y, w, h, mode, tabs, accent):
+        gid = c.create_group(name, edit=False, mode=mode)
+        g = c.layout.group(gid)
+        g["tabs"], g["items"] = [], []
+        for tname, items in tabs:
+            t = new_tab(tname)
+            g["tabs"].append(t)
+            for it in items:
+                g["items"].append(dict(it, tab=t["id"]))
+        g["tab"] = g["tabs"][0]["id"]
+        g["x"], g["y"] = av.left() + x, av.top() + y
+        if mode == "panel":
+            g["panel_size"] = [w, h]
+        else:
+            g["tile_size"] = [w, h]
+        g["accent"], g["badge"] = accent, 0
+        g["per_row"] = 3
+        return gid
+
+    group("Games", 170, 130, 520, 380, "panel",
+          [("Games", _sys_items(["joy.cpl", "mspaint.exe", "calc.exe", "notepad.exe", "charmap.exe", "magnify.exe"])),
+           ("AI", _sys_items(["cmd.exe", "WindowsPowerShell/v1.0/powershell.exe"])), ("Tools", files)], None)
+    group("Work", 730, 130, 324, 300, "tile",
+          [("Work", files[:5])], None)
+    group("Windows", 1090, 130, 324, 300, "tile",
+          [("Main", _sys_items(["taskmgr.exe", "control.exe", "regedit.exe", "msinfo32.exe", "dxdiag.exe"])),
+           ("More", _sys_items(["cleanmgr.exe"]))], None)
+    corner = os.environ.get("CLUTTERBUSTER_SHOWCASE_CORNER")
+    if corner:
+        c.ui["toolbar_corner"] = corner
+    c.undo_stack._items.clear()
+    c.commit()
+    c.place_bars()
+    c.dock.hide()
+
+    def step1():
+        for w in [c.search, *c.widgets.values()]:
+            desktop_layer.make_topmost(int(w.winId()))
+        QTimer.singleShot(900, step2)
+
+    def step2():
+        shot(out_png)
+        log.info("showcase: fun scene done (theme %s, corner %s)", c.theme_name, corner)
         app.quit()
 
     QTimer.singleShot(900, step1)

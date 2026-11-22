@@ -17,7 +17,7 @@ from .group_widget import GroupWidget, first_free_left, group_size, min_size, sn
 from .ledger import Hider, Ledger
 from .popup import GroupPopup
 from .quicksearch import QuickSearch
-from .searchbar import ActionBar, SearchBar
+from .searchbar import CORNERS as TOOLBAR_CORNERS, SNAP as TOOLBAR_SNAP, SearchBar
 from .store import Layout, UndoStack, new_group, new_tab, tab_of
 from .theme import ACCENTS, DEFAULT_UI
 from .tray import Tray, broom_icon
@@ -77,12 +77,11 @@ class Controller:
         self.sync_hidden()
 
         # 2) Windows
-        self.search = SearchBar(self)
-        self.actions = ActionBar(self)
+        self.search = SearchBar(self)       # the whole toolbar: search, + New Group, gear
+        self.actions = self.search          # (they used to be two windows)
         self.dock = Dock(self)
         self.place_bars()
         self.search.show()
-        self.actions.show()
         self.dock.show()
         self.popup = GroupPopup(self)
         self.quick = QuickSearch(self)
@@ -192,6 +191,10 @@ class Controller:
             top = min(max(int(pos[1]), av.top()), av.bottom() - 100)
             self.dock.place(cx, top)
             return
+        if self.search.wedge:            # toolbar tucked in a corner: the dock keeps its usual spot
+            av = self.avail()
+            self.dock.place(av.center().x(), av.top() + 12)
+            return
         sr = self.search.search_rect()
         cx = self.search.x() + sr.center().x()
         self.dock.place(cx, self.search.y() + self.search.height() - 4)
@@ -203,30 +206,87 @@ class Controller:
         return x, y
 
     def place_bars(self):
-        """Search bar, New Group/Undo buttons and dock: saved spots, or the defaults."""
+        """Toolbar (floating pill or tucked into a corner) and dock: saved spots, or the defaults."""
         av = self.avail()
-        pos = self.ui.get("search_pos") or self.search.default_pos(av)
-        self.search.move(*self._clamp_pos(self.search, pos))
-        pos = self.ui.get("actions_pos") or (self.search.x() + self.search.width() - 10, self.search.y())
-        self.actions.move(*self._clamp_pos(self.actions, pos))
+        corner = self.ui.get("toolbar_corner")
+        if corner in TOOLBAR_CORNERS:
+            self.search.set_corner(corner)
+            w, h = self.search.width(), self.search.height()
+            x = av.left() if corner[1] == "l" else av.right() - w + 1
+            y = av.top() if corner[0] == "t" else av.bottom() - h + 1
+            self.search.move(x, y)
+        else:
+            self.search.set_corner(None)
+            pos = self.ui.get("search_pos") or self.search.default_pos(av)
+            self.search.move(*self._clamp_pos(self.search, pos))
         self.place_dock()
 
     def bar_moved(self, key, widget, pt):
-        """Edit layout: the search bar, the buttons or the dock was dragged somewhere."""
+        """Edit layout: the toolbar or the dock was dragged somewhere."""
         if key == "dock_pos":
             x, y = self._clamp_pos(widget, (pt.x(), pt.y()))
             self.ui[key] = [x + widget.width() // 2, y]
         else:
-            self.ui[key] = list(self._clamp_pos(widget, (pt.x(), pt.y())))
+            self.search.set_corner(None)
+            self.ui.pop("toolbar_corner", None)
+            self.ui["search_pos"] = list(self._clamp_pos(self.search, (pt.x(), pt.y())))
         self.place_bars()
         self.schedule_save()
+
+    def toolbar_snap_corner(self, geo, cursor=None):
+        """While the toolbar is dragged: the screen corner it would tuck into (or None)."""
+        av = self.avail()
+        m = 10      # the toolbar's transparent margin
+        pts = {"tl": (QPoint(geo.left() + m, geo.top() + m), av.topLeft()),
+               "tr": (QPoint(geo.right() - m, geo.top() + m), av.topRight()),
+               "bl": (QPoint(geo.left() + m, geo.bottom() - m), av.bottomLeft()),
+               "br": (QPoint(geo.right() - m, geo.bottom() - m), av.bottomRight())}
+        best = None
+        for k, (mine, scr) in pts.items():
+            d = (mine - scr).manhattanLength()
+            if cursor is not None:
+                d = min(d, (cursor - scr).manhattanLength())
+            if d <= TOOLBAR_SNAP * 1.4 and (best is None or d < best[0]):
+                best = (d, k)
+        return best[1] if best else None
+
+    def toolbar_moved(self, corner, pos):
+        """The toolbar was dragged by its grip (or in Edit layout) and dropped."""
+        if self.layout_locked():
+            self.place_bars()
+            return
+        self.checkpoint("move toolbar")
+        if corner in TOOLBAR_CORNERS:
+            self.ui["toolbar_corner"] = corner
+        else:
+            self.ui.pop("toolbar_corner", None)
+            x, y = pos.x(), pos.y()
+            if self.edit_mode:
+                x, y = round(x / 16) * 16, round(y / 16) * 16
+            self.search.set_corner(None)
+            self.ui["search_pos"] = list(self._clamp_pos(self.search, (x, y)))
+        self.place_bars()
+        self.search.send_to_desktop_layer()
+        self.commit() if not self.edit_mode else self.schedule_save()
+
+    def reset_toolbar(self):
+        """Gear menu > Reset toolbar position: back to the middle of the top edge."""
+        if "toolbar_corner" not in self.ui and "search_pos" not in self.ui:
+            self.place_bars()
+            return
+        self.checkpoint("reset toolbar")
+        self.ui.pop("toolbar_corner", None)
+        self.ui.pop("search_pos", None)
+        self.place_bars()
+        self.search.send_to_desktop_layer()
+        self.commit()
 
     def schedule_save(self):
         self.save_timer.start(600)
 
     # ------------------------------------------------------------------ look & themes
     def all_windows(self):
-        out = [self.search, self.actions, self.dock, self.popup, self.quick, *self.widgets.values()]
+        out = [self.search, self.dock, self.popup, self.quick, *self.widgets.values()]
         out += [w for w in (self.toolbar, self.settings_win) if w is not None]
         return [w for w in out if w is not None]
 
@@ -447,8 +507,10 @@ class Controller:
             w, h = group_size(g)
             out.append(QRect(g["x"], g["y"], w, h))
         # keep the search bar, the buttons and the dock area free too
-        out.append(QRect(self.search.x(), self.search.y(), self.search.width(), self.search.height() + 90))
-        out.append(self.actions.geometry())
+        if self.search.wedge:
+            out.append(self.search.geometry())
+        else:
+            out.append(QRect(self.search.x(), self.search.y(), self.search.width(), self.search.height() + 90))
         if self.ui.get("dock_pos"):
             out.append(self.dock.geometry().adjusted(0, 0, 0, 90))
         return out
@@ -500,7 +562,7 @@ class Controller:
             log.exception("Could not write status.json")
 
     def reassert_layer(self):
-        for w in [self.search, self.actions, self.dock, *self.widgets.values()]:
+        for w in [self.search, self.dock, *self.widgets.values()]:
             w.send_to_desktop_layer()
 
     # ------------------------------------------------------------------ syncing
@@ -1289,6 +1351,41 @@ class Controller:
             except RuntimeError:
                 pass
 
+    # ------------------------------------------------------------------ corner pictures
+    def corner_choices(self):
+        from . import corners
+        return corners.choices()
+
+    def set_corner_picture(self, gid, value):
+        """value: "theme" (or None) = the theme's picture, "none", "asset:<name>" or a file path."""
+        self.set_group_prop(gid, "corner", None if value in (None, "theme") else value, "corner picture")
+
+    def choose_corner_picture(self, gid, src=None):
+        """Right-click > Corner picture > Choose image...: copies the picture into
+        %APPDATA%/ClutterBuster/pictures, so moving/deleting the original doesn't matter."""
+        from PySide6.QtWidgets import QFileDialog
+        from . import corners
+        from .glass import info
+        if self.layout.group(gid) is None:
+            return None
+        if src is None:
+            dlg = QFileDialog(None, "Choose a corner picture",
+                              os.path.join(os.path.expanduser("~"), "Pictures"), corners.IMAGE_FILTER)
+            dlg.setFileMode(QFileDialog.ExistingFile)
+            dlg.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            if not dlg.exec() or not dlg.selectedFiles():
+                return None
+            src = dlg.selectedFiles()[0]
+        try:
+            dest = corners.import_picture(src)
+        except OSError as e:
+            log.warning("Corner picture %s: %s", src, e)
+            info(None, "Corner picture", f"Couldn't use that picture:\n{e}")
+            return None
+        self.set_group_prop(gid, "corner", dest, "corner picture")
+        log.info("Corner picture for %s: %s", gid, dest)
+        return dest
+
     def reset_group_look(self, gid):
         g = self.layout.group(gid)
         keys = ("theme", "per_row", "labels", "transparency", "corner")
@@ -1500,6 +1597,21 @@ class Controller:
             a.setChecked((g.get("accent") or "").lower() == hexc.lower())
         acc.addSeparator()
         acc.addAction("Custom color...", lambda: self.pick_custom_accent(gid))
+        from . import corners
+        cm = m.addMenu("Corner picture")
+        cur = g.get("corner") or "theme"
+        for label, val in corners.choices():
+            if val == "choose":
+                cm.addSeparator()
+                cm.addAction(label, lambda: self.choose_corner_picture(gid))
+                continue
+            a = cm.addAction(label, lambda v=val: self.set_corner_picture(gid, v))
+            a.setCheckable(True)
+            a.setChecked(cur == val)
+        if cur not in [v for _l, v in corners.choices()]:
+            a = cm.addAction(corners.label_for(cur))
+            a.setCheckable(True)
+            a.setChecked(True)
         show = m.addMenu("Show as")
         mode = g.get("mode", "tile")
         a1 = show.addAction("Small tile", lambda: self.set_mode(gid, "tile"))
@@ -1537,6 +1649,10 @@ class Controller:
     def open_quick_search(self, text=""):
         if self.quick.isVisible():
             self.quick.activateWindow()
+            return
+        if self.search.wedge:             # tucked in a corner: quick search opens top-centre
+            av = self.avail()
+            self.quick.open(av.center().x(), av.top() + 18, text)
             return
         sr = self.search.search_rect()
         top = self.search.mapToGlobal(sr.topLeft().toPoint()).y()

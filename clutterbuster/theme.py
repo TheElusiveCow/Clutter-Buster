@@ -1,6 +1,7 @@
 """All colors and sizes live here.
 
-Two built-in themes - "Clean White" and "Neon Gamer" - plus your own saved themes.
+Built-in themes - "Clean White", "Neon Gamer" and the six fun ones in fun_themes.py
+(each with a decoration and a corner picture) - plus your own saved themes.
 The live theme is the THEME dictionary below; every window reads its colors from it,
 so switching theme just refills THEME and repaints.
 
@@ -100,6 +101,8 @@ NEON_GAMER.update({
 })
 
 BUILT_IN = {"Clean White": CLEAN_WHITE, "Neon Gamer": NEON_GAMER}
+from .fun_themes import make as _make_fun  # noqa: E402  (Space, Cozy Cabin, Holiday, Winter, ...)
+BUILT_IN.update(_make_fun(CLEAN_WHITE, NEON_GAMER))
 AUTO = "auto"
 
 # Accent colors offered in the group right-click menu (iOS-like system colors).
@@ -159,6 +162,19 @@ def custom_to_theme(ct):
     t["glow"] = int(ct.get("glow", 60)) > 0
     t["glow_scale"] = int(ct.get("glow", 60)) / 100
     t["radius_scale"] = 0.3 + int(ct.get("roundness", 55)) / 100 * 1.3
+    # decoration + corner picture (fun themes; a copy of one keeps them)
+    base = BUILT_IN.get(ct.get("base") or "")
+    decor = ct.get("decor", base.get("decor") if base else None)
+    if decor:
+        from .decor import STYLE_DEFAULTS
+        t["decor"] = decor
+        for k, v in STYLE_DEFAULTS.get(decor, {}).items():
+            t[k] = v
+        if base and base.get("decor") == decor and base.get("border_w"):
+            t["border_w"] = base["border_w"]
+    corner = ct.get("corner", base.get("corner") if base else None)
+    if corner:
+        t["corner"] = corner
     t["name"] = ct.get("name", "Custom")
     t["custom"] = True
     return t
@@ -174,7 +190,8 @@ def custom_from_builtin(name):
 
     return {"name": f"{name} (my copy)", "accent": t.get("default_accent", "#0A84FF"),
             "tint": hx("glass_fill", "#FFFFFF"), "text": hx("panel_text", "#1C1C22"),
-            "blur": 50, "glow": 60 if t.get("glow") else 0, "roundness": 55}
+            "blur": 50, "glow": 60 if t.get("glow") else 0, "roundness": 55,
+            "base": name, "decor": t.get("decor") or "", "corner": t.get("corner") or ""}
 
 
 def windows_prefers_light():

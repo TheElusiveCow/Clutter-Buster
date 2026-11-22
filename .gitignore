@@ -10,3 +10,5 @@ status.json
 layout.json
 ledger.json
 backups/
+!clutterbuster/assets/
+!clutterbuster/assets/**/*.png

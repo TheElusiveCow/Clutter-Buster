@@ -171,8 +171,13 @@ class FenceSettings(GlassPanel):
             w.blockSignals(False)
         if hasattr(self, "corner"):
             self.corner.blockSignals(True)
-            i = self.corner.findData(g.get("corner", "theme"))
-            self.corner.setCurrentIndex(i if i >= 0 else 0)
+            cur = g.get("corner") or "theme"
+            i = self.corner.findData(cur)
+            if i < 0:                                   # your own picture
+                from .corners import label_for
+                self.corner.insertItem(self.corner.count() - 1, label_for(cur), cur)
+                i = self.corner.findData(cur)
+            self.corner.setCurrentIndex(i)
             self.corner.blockSignals(False)
         for m, b in self.mode_btns.items():
             b.setChecked(g.get("mode", "tile") == m)

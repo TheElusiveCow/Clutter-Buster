@@ -100,6 +100,27 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
 - **Settings > Apps**: Clutter Buster now appears in Windows Settings > Apps > Installed apps
   (with the broom icon, publisher Brian, version 0.5.0) and can be uninstalled from there.
 
+### Version 0.6: fun themes with corner pictures, a movable toolbar
+
+- **Six new themes** (gear menu, Settings > Appearance, or per group in the group's gear panel):
+  **Space** (galaxy glass, star dust, purple glow), **Cozy Cabin** (wood + red plaid frame),
+  **Holiday** (red glass ringed with string lights), **Winter** (icy glass, frost, snowflakes),
+  **Springfield** (cartoon-town yellow, thick black outlines) and **Doghouse** (white comic-strip
+  panels, ink outlines). Springfield and Doghouse are original look-alike styles - no copyrighted
+  characters.
+- **Corner pictures**: each theme puts a small picture in the lower-right of every group (planet,
+  log cabin, Christmas tree, snowman, donut, doghouse). It's painted *under* the icons and shrinks
+  so it doesn't sit behind them. Per group: right-click > **Corner picture** > Theme default / None /
+  one of the six / **Choose image...** (your picture is copied into
+  `%APPDATA%\ClutterBuster\pictures`). Also in the group's gear panel. Undo works.
+- **Theme editor**: a copy of any theme keeps its decoration and picture; pick a different
+  **Decoration** and **Corner picture** for your own themes.
+- **Movable toolbar**: search, + New Group and the gear are now one toolbar. Drag it by the dots
+  on its left anywhere on the main screen - it remembers where. Drop it near a **screen corner**
+  and it tucks in as a quarter-circle wedge (search along the curve, round + and gear buttons);
+  drag it out by the dots in the corner and it's a pill again. **Lock layout** stops it moving;
+  gear menu > **Reset toolbar position** puts it back top-centre. It stays on the desktop layer.
+
 ### Version 0.5.2: tabs on top, names on fences
 - **The name is inside every group now**, on top (nothing sticks out under small tiles, so
   snapped tiles never overlap). Tabs sit right under the name as a pill bar (the selected tab is

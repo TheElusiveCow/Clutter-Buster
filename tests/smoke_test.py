@@ -191,10 +191,9 @@ c.toolbar.rows["icon_size"].slider.setValue(80)          # live
 assert theme.THEME["popup_icon"] == 80
 c.set_ui("per_row", 4)
 assert c.popup.metrics()[2] == 4
-c.bar_moved("search_pos", c.search, QPoint(240, 192))
-c.bar_moved("actions_pos", c.actions, QPoint(400, 304))
+c.bar_moved("search_pos", c.search, QPoint(64, 192))
 c.bar_moved("dock_pos", c.dock, QPoint(96, 400))
-assert c.search.pos() == QPoint(240, 192) and c.actions.pos() == QPoint(400, 304)
+assert c.search.pos() == QPoint(64, 192) and c.actions is c.search
 c.open_group(g2)
 c.popup.progress = 1.0
 c.ui["popup_size"] = [700, 420]
@@ -208,7 +207,7 @@ assert not c.edit_mode and not c.toolbar.isVisible()
 assert len(c.undo_stack._items) == n_undo + 1 and c.undo_stack.next_label() == "edit layout"
 import json  # noqa: E402
 saved = json.load(open(paths.layout_file()))
-assert saved["ui"]["search_pos"] == [240, 192] and saved["ui"]["icon_size"] == 80
+assert saved["ui"]["search_pos"] == [64, 192] and saved["ui"]["icon_size"] == 80
 c.undo()
 assert "search_pos" not in c.ui and c.layout.group(g2)["x"] == gx and theme.THEME["popup_icon"] == 64
 assert c.search.pos() == before_pos
@@ -277,7 +276,7 @@ assert c.layout.prefs["autostart"] is True and integration.autostart_enabled()
 run_cmd = integration.FAKE[integration.RUN_KEY]["ClutterBuster"]
 assert run_cmd.endswith('main.py"') and "--uninstall" not in run_cmd, run_cmd
 u = integration.FAKE[integration.UNINSTALL_KEY]
-assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.2"
+assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.6.0"
 assert u["UninstallString"].endswith('main.py" --uninstall') and u["NoModify"] == 1 and os.path.exists(u["DisplayIcon"])
 c.set_autostart(False)
 assert not integration.autostart_enabled() and c.layout.prefs["autostart"] is False
@@ -603,7 +602,7 @@ qm.close()
 mk_ = c.edit_theme("Neon Gamer")
 assert mk_.data["name"] == "Neon Gamer (my copy)"
 mk_.close()
-assert c.actions.boxes()[1][0] == "gear" and len(c.actions.boxes()) == 2
+assert c.actions is c.search and c.search.hit(c.search.gear_rect().center()) == "gear"
 # ================= hiding: same-named twin on the other desktop + failed-hide marker =================
 twin_u = mk(desk, "Twin App.lnk")
 twin_p = mk(pub, "Twin App.lnk")
@@ -1079,6 +1078,182 @@ assert _reg[-1] == (0x0006, 0x46), "old shortcut re-registered"
 assert sw.hk_edit.apply(0x0002, 0x20) and c.search_hotkey()["text"] == "Ctrl+Space", "Reset to Ctrl+Space"
 sw.close()
 _hk.register = _orig_reg
+# ================= fun themes + corner pictures =================
+from clutterbuster import corners as cmod, decor as dmod  # noqa: E402
+from PySide6.QtCore import QRectF  # noqa: E402
+from PySide6.QtGui import QColor  # noqa: E402
+from PySide6.QtWidgets import QPushButton  # noqa: E402
+FUN = ["Space", "Cozy Cabin", "Holiday", "Winter", "Springfield", "Doghouse"]
+for n in FUN:
+    assert n in theme.BUILT_IN, n
+    assert os.path.isfile(cmod.asset_path(theme.BUILT_IN[n]["corner"])), n
+    assert theme.BUILT_IN[n]["decor"] in [k for k, _l in dmod.STYLES]
+qm = c.show_quick_menu()
+assert all(n in qm.theme_btns for n in FUN), "fun themes in the gear menu"
+qm.close()
+from clutterbuster.settings import SettingsWindow  # noqa: E402,F401
+fx = c.create_group("Fun", edit=False)
+for k in range(5):
+    pth = os.path.join(desk, f"Fun{k}.lnk")
+    open(pth, "w").write("x")
+    c.add_paths(fx, [pth])
+fw = c.widgets[fx]
+c.resize_group(fx, 700, 300, 324, 344)
+fw = c.widgets[fx]
+c.set_theme_choice("Space")
+assert theme.THEME["decor"] == "stars" and cmod.path_for(c.layout.group(fx)).endswith("space.png")
+for n in FUN:
+    c.set_theme_choice(n)
+    fw = c.widgets[fx]
+    img = fw.grab()
+    img.save(os.path.join(tmp, f"fun-{n.replace(' ', '_').lower()}.png"))
+    assert not img.isNull()
+    c.search.grab().save(os.path.join(tmp, f"fun-toolbar-{n.replace(' ', '_').lower()}.png"))
+# the corner picture never sits on an icon (it shrinks, and is painted under them)
+area = QRectF(fw.glass_rect())
+cells, lines = fw.tile_layout()
+cr_, free = cmod.place(area.adjusted(8, 8, -8, -8), [cell for _i, _ir, cell in cells])
+assert not free or not any(cr_.intersects(cell) for _i, _ir, cell in cells)
+# per group: theme default / none / bundled / your own picture (copied into pictures/)
+g_f = c.layout.group(fx)
+c.set_corner_picture(fx, "none")
+assert g_f["corner"] == "none" and cmod.path_for(g_f) is None
+c.undo()
+assert "corner" not in c.layout.group(fx), "corner picture change is one undo step"
+c.set_corner_picture(fx, "asset:doghouse")
+assert cmod.path_for(c.layout.group(fx)).endswith("doghouse.png")
+from PySide6.QtGui import QImage  # noqa: E402
+own = os.path.join(tmp, "my-cat.png")
+im_ = QImage(40, 30, QImage.Format_ARGB32)
+im_.fill(QColor(200, 100, 50))
+im_.save(own)
+dest = c.choose_corner_picture(fx, src=own)
+assert dest and os.path.dirname(dest) == os.path.join(paths.app_dir(), "pictures") and os.path.isfile(dest)
+assert c.layout.group(fx)["corner"] == dest and cmod.path_for(c.layout.group(fx)) == dest
+bad = os.path.join(tmp, "not-a-picture.png")
+open(bad, "w").write("hello")
+real_info = None
+import clutterbuster.glass as glass_mod  # noqa: E402
+real_info, glass_mod.info = glass_mod.info, (lambda *a, **k: None)
+assert c.choose_corner_picture(fx, src=bad) is None and c.layout.group(fx)["corner"] == dest
+glass_mod.info = real_info
+fw.grab().save(os.path.join(tmp, "fun-own-picture.png"))
+fs_ = c.fence_settings(fx, fw)
+assert fs_.corner.currentData() == dest, "own picture shown in the gear panel"
+fs_.corner.setCurrentIndex(fs_.corner.findData("theme"))
+fs_._corner(0)
+assert "corner" not in c.layout.group(fx)
+fs_.close()
+# right-click menu has the Corner picture submenu (built, not shown)
+# theme editor: a copy of a fun theme keeps its decoration + picture, and both are editable
+mk2 = c.edit_theme("Holiday")
+assert mk2.data["decor"] == "lights" and mk2.data["corner"] == "holiday"
+assert mk2.preview_theme()["decor"] == "lights" and mk2.preview_theme()["corner"] == "holiday"
+mk2.decor.setCurrentIndex(mk2.decor.findData("frost"))
+mk2.corner.setCurrentIndex(mk2.corner.findData("winter"))
+mk2.changed()
+assert mk2.preview_theme()["decor"] == "frost" and mk2.preview_theme()["corner"] == "winter"
+mk2.preview.grab().save(os.path.join(tmp, "fun-editor-preview.png"))
+mk2.close()
+# per-group theme override shows that theme's picture
+c.set_theme_choice("Clean White")
+assert cmod.path_for(c.layout.group(fx)) is None
+c.set_group_prop(fx, "theme", "Winter", "group theme")
+fw.grab().save(os.path.join(tmp, "fun-group-override.png"))
+th_ = theme.group_theme(c.layout.group(fx), "Clean White", c.ui, c.layout.custom_themes)
+assert th_["corner"] == "winter" and cmod.path_for(c.layout.group(fx), th_).endswith("winter.png")
+c.set_group_prop(fx, "theme", None, "group theme")
+# ================= movable toolbar + corner lock =================
+from clutterbuster import searchbar as sbm  # noqa: E402
+tb = c.search
+av = c.avail()
+c.reset_toolbar()
+assert not tb.wedge and tb.size().width() == sbm.pill_size()[0]
+home = tb.pos()
+assert tb.hit(tb.grip_rect().center()) == "grip" and tb.hit(tb.search_rect().center()) == "search"
+assert tb.hit(tb.new_rect().center()) == "new" and tb.hit(tb.gear_rect().center()) == "gear"
+# drag by the grip to a new spot (remembered, one undo step)
+n_u = len(c.undo_stack._items)
+gpt = tb.grip_rect().center().toPoint()
+QTest.mousePress(tb, Qt.LeftButton, Qt.NoModifier, gpt)
+QTest.mouseMove(tb, gpt + QPoint(40, 200))
+QTest.mouseMove(tb, gpt + QPoint(60, 300))
+QTest.mouseRelease(tb, Qt.LeftButton, Qt.NoModifier, gpt + QPoint(60, 300))
+assert "toolbar_corner" not in c.ui and c.ui.get("search_pos") and tb.pos() != home, c.ui.get("search_pos")
+assert c.undo_stack.next_label() == "move toolbar", c.undo_stack.next_label()
+saved_tb = json.load(open(paths.layout_file()))["ui"]
+assert saved_tb.get("search_pos") == c.ui["search_pos"], "position saved"
+# dragging the body / search box doesn't move it
+p0 = tb.pos()
+sp = tb.search_rect().center().toPoint()
+QTest.mousePress(tb, Qt.LeftButton, Qt.NoModifier, sp)
+QTest.mouseMove(tb, sp + QPoint(80, 80))
+QTest.mouseRelease(tb, Qt.LeftButton, Qt.NoModifier, sp + QPoint(80, 80))
+assert tb.pos() == p0
+# near each corner -> tucks in as a wedge; all four work
+for k in ("tl", "tr", "bl", "br"):
+    pill = QRect(0, 0, *sbm.pill_size())
+    if k == "tl":
+        pill.moveTopLeft(av.topLeft() + QPoint(20, 15))
+    elif k == "tr":
+        pill.moveTopRight(av.topRight() + QPoint(-20, 15))
+    elif k == "bl":
+        pill.moveBottomLeft(av.bottomLeft() + QPoint(20, -15))
+    else:
+        pill.moveBottomRight(av.bottomRight() + QPoint(-20, -15))
+    assert c.toolbar_snap_corner(pill) == k, (k, c.toolbar_snap_corner(pill))
+    c.toolbar_moved(k, pill.topLeft())
+    assert tb.wedge and tb.corner == k and c.ui["toolbar_corner"] == k
+    g_ = tb.geometry()
+    want = {"tl": av.topLeft(), "tr": av.topRight(), "bl": av.bottomLeft(), "br": av.bottomRight()}[k]
+    have = {"tl": g_.topLeft(), "tr": g_.topRight(), "bl": g_.bottomLeft(), "br": g_.bottomRight()}[k]
+    assert have == want, (k, have, want)
+    for key in ("search", "new", "gear", "grip"):
+        cpt = getattr(tb, key + "_rect")().center()
+        assert tb.hit(cpt) == key, (k, key, tb.hit(cpt))
+    tb.grab().save(os.path.join(tmp, f"toolbar-wedge-{k}.png"))
+assert c.toolbar_snap_corner(QRect(av.center().x() - 300, av.center().y(), 600, 78)) is None
+# clicks in the wedge still work
+opened = []
+real_q, c.open_quick_search = c.open_quick_search, (lambda *a: opened.append(1))
+QTest.mouseClick(tb, Qt.LeftButton, Qt.NoModifier, tb.search_rect().center().toPoint())
+c.open_quick_search = real_q
+assert opened, "search along the curve opens quick search"
+# drag the wedge out -> back to the pill
+gp = tb.grip_rect().center().toPoint()
+QTest.mousePress(tb, Qt.LeftButton, Qt.NoModifier, gp)
+QTest.mouseMove(tb, gp + QPoint(-300, -300))
+assert not tb.wedge, "pulled out = pill again"
+tb.grab().save(os.path.join(tmp, "toolbar-pulled-out.png"))
+QTest.mouseMove(tb, tb.grip_rect().center().toPoint() + QPoint(-5, 20))
+QTest.mouseRelease(tb, Qt.LeftButton, Qt.NoModifier, tb.grip_rect().center().toPoint())
+assert "toolbar_corner" not in c.ui and not tb.wedge
+# undo puts it back in the corner
+c.undo()
+assert tb.wedge and tb.corner == "br"
+# Lock layout: the grip does nothing
+c.set_locked(True)
+assert c.layout_locked()
+p0, corner0 = tb.pos(), tb.corner
+gp = tb.grip_rect().center().toPoint()
+QTest.mousePress(tb, Qt.LeftButton, Qt.NoModifier, gp)
+QTest.mouseMove(tb, gp + QPoint(-300, -300))
+QTest.mouseRelease(tb, Qt.LeftButton, Qt.NoModifier, gp + QPoint(-300, -300))
+assert tb.pos() == p0 and tb.corner == corner0, "locked = can't move"
+c.set_locked(False)
+# Reset toolbar position (gear menu)
+qm = c.show_quick_menu()
+rb = [b for b in qm.findChildren(QPushButton) if "Reset toolbar" in b.text()]
+assert rb
+rb[0].click()
+assert not tb.wedge and tb.pos() == QPoint(*tb.default_pos(av)) and "toolbar_corner" not in c.ui
+assert c.undo_stack.next_label() == "reset toolbar"
+assert desktop_layer is not None
+c.delete_group(fx)
+for k in range(5):
+    os.remove(os.path.join(desk, f"Fun{k}.lnk"))
+err = paths.error_log()
+assert not os.path.exists(err) or os.path.getsize(err) == 0, open(err).read()
 # --- the Remove confirmation: 'also delete the program folder' starts unticked; Cancel = nothing
 from PySide6.QtCore import QTimer  # noqa: E402
 seen = {}

@@ -15,7 +15,7 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from . import icons, namestyle, snapping, tabs as tabsmod
+from . import corners, icons, namestyle, snapping, tabs as tabsmod
 from .store import current_tab, tab_indices, tab_of
 from PySide6.QtCore import QTimer as QTimerS
 from .glass import (DesktopLayerWindow, accept_drag, draw_badge, draw_edit_outline, draw_glass,
@@ -532,6 +532,10 @@ class GroupWidget(DesktopLayerWindow):
             p.setPen(QPen(ring, 1.6))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rr - 1, rr - 1)
+        cells, lines = self.tile_layout()
+        # the theme's (or the group's own) corner picture - under the icons, never on top
+        corners.draw(p, r, g, [(cell if lines else ir).adjusted(-2, -2, 2, 2) for _i, ir, cell in cells]
+                     + [self.tile_title_rect()], margin=max(6.0, rr * 0.45))
         # the name, on top inside the tile
         if not (self.editor and self.editor.isVisible()):
             st = namestyle.resolve(self.c.layout, g)
@@ -545,7 +549,6 @@ class GroupWidget(DesktopLayerWindow):
             if self._hover:
                 self.paint_name_buttons(p)
         self.paint_tile_strip(p, acc)
-        cells, lines = self.tile_layout()
         lf = self.tile_label_font()
         lfm = QFontMetrics(lf)
         for idx, ir, cell in cells:
@@ -570,6 +573,7 @@ class GroupWidget(DesktopLayerWindow):
         acc = accent_color(g)
         draw_shadow(p, r, self.radius(), 1.0)
         draw_glass(p, r, self.radius(), fill_key="panel_fill", glow=self._drop_hover, strip=True)
+        corners.draw(p, r, g, [ir for _i, ir in self.panel_item_rects()], margin=10)
         # title bar: accent dot + name + "..." menu
         p.setPen(Qt.NoPen)
         p.setBrush(acc)
