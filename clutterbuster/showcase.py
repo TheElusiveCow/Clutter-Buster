@@ -157,6 +157,9 @@ def run_showcase(out_png):
         QGuiApplication.primaryScreen().grabWindow(0).save(path)
         log.info("showcase: saved %s", path)
 
+    if os.environ.get("CLUTTERBUSTER_SHOWCASE_SCENE") == "tabs":
+        return _tabs_scene(app, c, demo, out_png, shot, log, shutil)
+
     def step1():
         for w in [c.search, c.actions, c.dock, *c.widgets.values()]:
             desktop_layer.make_topmost(int(w.winId()))   # re-stack the demo windows above the backdrop
@@ -183,4 +186,64 @@ def run_showcase(out_png):
     QTimer.singleShot(20000, app.quit)  # safety net
     rc = app.exec()
     shutil.rmtree(demo, ignore_errors=True)   # our own pretend desktop in %TEMP%
+    return rc
+
+
+def _tabs_scene(app, c, demo, out_png, shot, log, shutil):
+    """v0.5 demo: big panels with tabs (icons + list view), bigger names, and the gear menu open.
+    Pretend items only (built-in Windows programs and empty files in the %TEMP% demo desktop)."""
+    from .store import new_tab
+    av = c.avail()
+    files = [{"path": os.path.join(demo, n)} for n in
+             ("Budget 2026.xlsx", "Notes.txt", "Recipe.pdf", "Holiday photo.jpg", "Old Projects", "Screenshots")]
+
+    def tabbed(name, x, y, w, h, accent, tabs, current, view=None):
+        gid = c.create_group(name, edit=False, mode="panel")
+        g = c.layout.group(gid)
+        g["tabs"], g["items"] = [], []
+        for tname, items in tabs:
+            t = new_tab(tname)
+            g["tabs"].append(t)
+            for it in items:
+                g["items"].append(dict(it, tab=t["id"]))
+        g["tab"] = g["tabs"][current]["id"]
+        if view:
+            g["tabs"][current]["view"] = view
+        g["x"], g["y"], g["panel_size"] = av.left() + x, av.top() + y, [w, h]
+        g["accent"], g["badge"] = accent, 0
+        return gid
+
+    tabbed("My Stuff", 330, 110, 460, 300, "#00D2FF",
+           [("Apps", _sys_items(["notepad.exe", "calc.exe", "mspaint.exe", "charmap.exe", "magnify.exe"])),
+            ("Tools", _sys_items(["cmd.exe", "taskmgr.exe", "regedit.exe", "msinfo32.exe", "dxdiag.exe",
+                                  "cleanmgr.exe", "perfmon.exe"])),
+            ("Files", files)], current=1)
+    tabbed("Documents", 330, 440, 540, 250, "#FF9F0A",
+           [("Files", files), ("Apps", _sys_items(["notepad.exe", "write.exe"]))], current=0, view="list")
+    for gid in list(c.widgets):
+        g = c.layout.group(gid)
+        if g and g["name"] in ("Windows Tools",):
+            g["x"], g["y"] = av.left() + 900, av.top() + 150
+    c.undo_stack._items.clear()
+    c.commit()
+
+    def step1():
+        for w in [c.search, c.actions, c.dock, *c.widgets.values()]:
+            desktop_layer.make_topmost(int(w.winId()))
+        r = c.actions.gear_rect()
+        from PySide6.QtCore import QRect
+        c.show_quick_menu(QRect(c.actions.mapToGlobal(r.topLeft().toPoint()), r.size().toSize()))
+        QTimer.singleShot(900, step2)
+
+    def step2():
+        shot(out_png)
+        if c.quick_menu is not None:
+            c.quick_menu.close()
+        log.info("showcase: tabs scene done (theme %s)", c.theme_name)
+        app.quit()
+
+    QTimer.singleShot(900, step1)
+    QTimer.singleShot(20000, app.quit)
+    rc = app.exec()
+    shutil.rmtree(demo, ignore_errors=True)
     return rc

@@ -10,9 +10,10 @@ import math
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QTextOption
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
-from . import icons, sounds
+from . import icons, sounds, tabs as tabsmod
+from .store import current_tab, tab_indices
 from .glass import (accept_drag, bring_to_top, draw_edit_outline, draw_glass, draw_neon, draw_shadow,
                     parse_drop, read_item, rounded)
 from .theme import THEME, accent_color, qcolor, rad
@@ -56,6 +57,11 @@ class GroupPopup(QWidget):
         self.last_closed = (None, 0)
         self.stay_open = False   # showcase screenshots only
         self._resize = None      # Edit layout: (press pos, panel rect, edges)
+        self._hover_tab = None
+        self._drop_tab = None
+        self._selected = None
+        self.tab_editor = None
+        self._editing_tab = None
         self.anim = QVariantAnimation(self)
         self.anim.valueChanged.connect(self._on_progress)
         self.anim.finished.connect(self._on_anim_done)
@@ -84,10 +90,106 @@ class GroupPopup(QWidget):
             cw = (w - 2 * PAD) / cols
             isz = int(max(MIN_ICON, min(isz, cw - 54)))
             ch = isz + 50
-            rows = max(1, int((h - HEADER_H - DOTS_H - PAD) // ch))
+            rows = max(1, int((h - self.header_h() - DOTS_H - PAD) // ch))
+            if self.view() == "list":
+                rows = tabsmod.rows_per_page(h - self.header_h() - DOTS_H - PAD)
             return w, h, cols, rows, cw, ch, isz
         cw, ch = cell_size(isz)
-        return cols * cw + 2 * PAD, HEADER_H + 3 * ch + DOTS_H + PAD, cols, 3, cw, ch, isz
+        w, h = cols * cw + 2 * PAD, self.header_h() + 3 * ch + DOTS_H + PAD
+        if self.view() == "list":
+            return w, h, 1, tabsmod.rows_per_page(3 * ch), w - 2 * PAD, tabsmod.ROW_H, isz
+        return w, h, cols, 3, cw, ch, isz
+
+    # ------------------------------------------------------------ tabs
+    def multi_tab(self):
+        g = self.group
+        return bool(g) and len(g.get("tabs") or []) > 1
+
+    def header_h(self):
+        return HEADER_H + (tabsmod.TAB_H + 8 if self.multi_tab() else 0)
+
+    def view(self):
+        g = self.group
+        return (current_tab(g) or {}).get("view", "icons") if g else "icons"
+
+    def visible(self):
+        g = self.group
+        return tab_indices(g) if g else []
+
+    def tab_bar(self):
+        g = self.group
+        pr = self.panel_rect()
+        if g is None:
+            return [], QRectF(), None
+        if not self.multi_tab():
+            return [], QRectF(), tabsmod.plus_only(pr.right() - PAD - 92, pr.top() + 8 + (46 - tabsmod.TAB_H) / 2)
+        return tabsmod.bar_layout(tabsmod.tab_font(self.font(), 9.5), g["tabs"], pr.left() + PAD,
+                                  pr.top() + HEADER_H - 6, pr.width() - 2 * PAD)
+
+    def tab_at(self, pos):
+        if self.progress < 1:
+            return None
+        segs, _t, plus = self.tab_bar()
+        return tabsmod.hit_bar(segs, plus, QPointF(pos))
+
+    def content_rect(self):
+        pr = self.panel_rect()
+        return QRectF(pr.left() + PAD, pr.top() + self.header_h(), pr.width() - 2 * PAD,
+                      pr.height() - self.header_h() - DOTS_H - PAD / 2)
+
+    def tab_changed(self):
+        """Another tab was picked (or tabs were added/removed): back to page 1, keep the top-left."""
+        self.page = 0
+        self.page_pos = 0.0
+        self._selected = None
+        if self.isVisible():
+            tl = self.geometry().topLeft()
+            w, h = self.panel_size()
+            self.setGeometry(tl.x(), tl.y(), w + 2 * MARGIN, h + 2 * MARGIN)
+        self.update()
+
+    def start_tab_rename(self, tid):
+        g = self.group
+        if g is None:
+            return
+        segs, _t, _p = self.tab_bar()
+        rect = dict(segs).get(tid)
+        t = next((x for x in g["tabs"] if x["id"] == tid), None)
+        if rect is None or t is None:
+            return
+        if self.tab_editor is None:
+            self.tab_editor = QLineEdit(self)
+            self.tab_editor.setAlignment(Qt.AlignCenter)
+            self.tab_editor.setStyleSheet(
+                "QLineEdit{background:rgba(255,255,255,245);color:#1c1c22;border:1px solid #0A84FF;"
+                "border-radius:9px;padding:0 4px;font-size:9.5pt;}")
+            self.tab_editor.editingFinished.connect(self._finish_tab_rename)
+            self.tab_editor.installEventFilter(self)
+        self._editing_tab = tid
+        w = max(100, int(rect.width()) + 24)
+        self.tab_editor.setGeometry(int(rect.center().x() - w / 2), int(rect.top()), w, int(rect.height()))
+        self.tab_editor.setText(t["name"])
+        self.tab_editor.selectAll()
+        self.tab_editor.show()
+        self.tab_editor.setFocus(Qt.OtherFocusReason)
+
+    def _finish_tab_rename(self):
+        if self.tab_editor is None or not self.tab_editor.isVisible():
+            return
+        name = self.tab_editor.text().strip()
+        self.tab_editor.hide()
+        self.setFocus()
+        if name:
+            self.c.rename_tab(self.gid, self._editing_tab, name)
+        self.update()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.tab_editor and ev.type() == ev.Type.KeyPress and ev.key() == Qt.Key_Escape:
+            self.tab_editor.hide()
+            self.setFocus()
+            self.update()
+            return True
+        return super().eventFilter(obj, ev)
 
     def min_panel_size(self):
         cols = max(1, int(THEME.get("per_row", 3)))
@@ -135,6 +237,9 @@ class GroupPopup(QWidget):
         self.page_pos = 0.0
         self.closing = False
         self._hover_item = None
+        self._selected = None
+        if self.tab_editor is not None:
+            self.tab_editor.hide()
         self.progress = 0.0
         self.place_next_to(anchor_rect)
         self.show()
@@ -189,13 +294,16 @@ class GroupPopup(QWidget):
     # ------------------------------------------------------------ geometry
     def pages(self):
         g = self.group
-        return max(1, math.ceil((len(g["items"]) if g else 0) / self.per_page()))
+        return max(1, math.ceil((len(self.visible()) if g else 0) / self.per_page()))
 
     def item_rect(self, k, shift=0.0):
         pr = self.panel_rect()
         _w, _h, cols, _rows, cw, ch, _isz = self.metrics()
+        if self.view() == "list":
+            cr = self.content_rect()
+            return QRectF(cr.left() + shift, cr.top() + tabsmod.HEAD_H + k * tabsmod.ROW_H, cr.width(), tabsmod.ROW_H)
         row, col = divmod(k, cols)
-        return QRectF(pr.left() + PAD + col * cw + shift, pr.top() + HEADER_H + row * ch, cw, ch)
+        return QRectF(pr.left() + PAD + col * cw + shift, pr.top() + self.header_h() + row * ch, cw, ch)
 
     def dot_rects(self):
         n = self.pages()
@@ -235,7 +343,8 @@ class GroupPopup(QWidget):
         p.setBrush(acc)
         p.drawEllipse(QPointF(pr.left() + PAD + 6, pr.top() + 31), 6, 6)
         p.setPen(qcolor("title_text"))
-        title = fm.elidedText(g["name"], Qt.ElideRight, int(pr.width() - 2 * PAD - 90))
+        segs, track, plus = self.tab_bar()
+        title = fm.elidedText(g["name"], Qt.ElideRight, int(pr.width() - 2 * PAD - 130))
         p.drawText(QRectF(pr.left() + PAD + 20, pr.top() + 8, pr.width(), 46), Qt.AlignLeft | Qt.AlignVCenter, title)
         sf = QFont(self.font())
         sf.setPointSizeF(9)
@@ -244,6 +353,11 @@ class GroupPopup(QWidget):
         n = len(g["items"])
         p.drawText(QRectF(pr.left(), pr.top() + 8, pr.width() - PAD, 46), Qt.AlignRight | Qt.AlignVCenter,
                    f"{n} item{'s' if n != 1 else ''}")
+        if segs:
+            tabsmod.paint_bar(p, tabsmod.tab_font(self.font(), 9.5), g["tabs"], segs, track, plus, g.get("tab"),
+                              acc, hover=self._hover_tab, drop=self._drop_tab)
+        elif plus is not None:
+            tabsmod.paint_plus(p, plus, self._hover_tab == "+")
         # items as soft white cards (clipped so sliding pages look right)
         p.save()
         p.setClipPath(rounded(pr, rr))
@@ -255,12 +369,19 @@ class GroupPopup(QWidget):
         per = self.per_page()
         opt = QTextOption(Qt.AlignHCenter | Qt.AlignTop)
         opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        vis = self.visible()
         for page in range(self.pages()):
             shift = (page - self.page_pos) * (pr.width())
             if abs(shift) >= pr.width():
                 continue
-            for k, it in enumerate(g["items"][page * per:(page + 1) * per]):
-                idx = page * per + k
+            if self.view() == "list":
+                tabsmod.paint_list(p, self.content_rect().translated(shift, 0), g, vis[page * per:(page + 1) * per],
+                                   self.font(), hover=self._hover_item if t >= 1 else None, selected=self._selected,
+                                   drop=self._drop_item, accent=acc)
+                p.setFont(nf)
+                continue
+            for k, idx in enumerate(vis[page * per:(page + 1) * per]):
+                it = g["items"][idx]
                 cell = self.item_rect(k, shift)
                 card = cell.adjusted(5, 4, -5, -4)
                 hot = (idx == self._hover_item and t >= 1) or idx == self._drop_item
@@ -269,19 +390,23 @@ class GroupPopup(QWidget):
                 p.drawRoundedRect(card, rad(16), rad(16))
                 ir = QRectF(card.center().x() - isz / 2, card.top() + 10, isz, isz)
                 icons.icon_for(it["path"]).paint(p, ir.toRect())
+                if self.c.hide_failed(it["path"]):
+                    from .glass import draw_warn
+                    draw_warn(p, QPointF(ir.right(), ir.bottom()), 8)
                 name = icons.item_name(it)
                 nr = QRectF(card.left() + 5, ir.bottom() + 5, card.width() - 10, nfm.height() * 2 + 2)
                 if nfm.horizontalAdvance(name) > nr.width() * 2 - 12:
                     name = nfm.elidedText(name, Qt.ElideRight, int(nr.width() * 2 - 12))
                 p.setPen(qcolor("panel_text"))
                 p.drawText(nr, name, opt)
-        if not g["items"]:
+        if not vis:
             p.setPen(qcolor("panel_subtext"))
             f2 = QFont(self.font())
             f2.setPointSizeF(11)
             p.setFont(f2)
-            p.drawText(pr.adjusted(30, HEADER_H, -30, -DOTS_H), Qt.AlignCenter | Qt.TextWordWrap,
-                       "This group is empty.\nDrag shortcuts, files, folders or website links onto it.")
+            p.drawText(pr.adjusted(30, self.header_h(), -30, -DOTS_H), Qt.AlignCenter | Qt.TextWordWrap,
+                       "This group is empty.\nDrag shortcuts, files, folders or website links onto it."
+                       if not g["items"] else "This tab is empty.\nDrag items onto the tab's name to move them here.")
         p.restore()
         if self.pages() > 1:
             p.setPen(Qt.NoPen)
@@ -298,11 +423,11 @@ class GroupPopup(QWidget):
         if g is None or self.progress < 1:
             return None
         per = self.per_page()
-        for k in range(per):
-            idx = self.page * per + k
-            if idx >= len(g["items"]):
-                break
-            if self.item_rect(k).adjusted(5, 4, -5, -4).contains(QPointF(pos)):
+        vis = self.visible()
+        lst = self.view() == "list"
+        for k, idx in enumerate(vis[self.page * per:(self.page + 1) * per]):
+            r = self.item_rect(k)
+            if (r if lst else r.adjusted(5, 4, -5, -4)).contains(QPointF(pos)):
                 return idx
         return None
 
@@ -359,6 +484,15 @@ class GroupPopup(QWidget):
         if not self.panel_rect().contains(pos):
             self.close_animated()  # the shadow margin counts as "outside"
             return
+        t = self.tab_at(pos)
+        if t is not None and e.button() == Qt.LeftButton:
+            if t == "+":
+                tid = self.c.add_tab(self.gid)
+                if tid:
+                    QTimer.singleShot(60, lambda: self.start_tab_rename(tid))
+            else:
+                self.c.select_tab(self.gid, t)
+            return
         if e.button() == Qt.LeftButton:
             for i, dr in enumerate(self.dot_rects() if self.pages() > 1 else []):
                 if dr.contains(pos):
@@ -394,6 +528,11 @@ class GroupPopup(QWidget):
             if self._dragging:
                 self.move(self._press_win + d)   # drag the popup around
             return
+        ht = self.tab_at(pos)
+        if ht != self._hover_tab:
+            self._hover_tab = ht
+            self.setCursor(Qt.PointingHandCursor) if ht else self.unsetCursor()
+            self.update()
         hv = self.item_at(pos)
         if hv != self._hover_item:
             self._hover_item = hv
@@ -411,6 +550,10 @@ class GroupPopup(QWidget):
         was_drag, pressed = self._dragging, self._press_item
         self._press = None
         self._dragging = False
+        if not was_drag and pressed is not None and self.view() == "list":
+            self._selected = pressed            # list view: click selects, double-click opens
+            self.update()
+            return
         if (not was_drag and pressed is not None and pressed == self.item_at(e.position())
                 and not self.c.edit_mode):
             g = self.group
@@ -419,7 +562,21 @@ class GroupPopup(QWidget):
                 self.close_animated()
                 self.c.launch(path)
 
+    def mouseDoubleClickEvent(self, e):
+        if e.button() != Qt.LeftButton or self.view() != "list" or self.c.edit_mode:
+            return
+        idx = self.item_at(e.position())
+        g = self.group
+        if idx is not None and g and idx < len(g["items"]):
+            path = g["items"][idx]["path"]
+            self.close_animated()
+            self.c.launch(path)
+
     def contextMenuEvent(self, e):
+        t = self.tab_at(QPointF(e.pos()))
+        if t and t != "+":
+            self.c.tab_menu(self.gid, t, e.globalPos(), self)
+            return
         idx = self.item_at(QPointF(e.pos()))
         g = self.group
         if idx is None or g is None:
@@ -476,14 +633,18 @@ class GroupPopup(QWidget):
     def dragMoveEvent(self, e):
         if not accept_drag(e):
             return
-        di = self.item_at(e.position()) if read_item(e.mimeData()) else None
-        if di != self._drop_item:
+        t = self.tab_at(e.position())
+        t = t if t and t != "+" else None
+        di = None if t else (self.item_at(e.position()) if read_item(e.mimeData()) else None)
+        if di != self._drop_item or t != self._drop_tab:
             self._drop_item = di
+            self._drop_tab = t
             self.update()
 
     def dragLeaveEvent(self, e):
         self._drop_hover = False
         self._drop_item = None
+        self._drop_tab = None
         self.update()
 
     def dropEvent(self, e):
@@ -493,12 +654,14 @@ class GroupPopup(QWidget):
         if self._drop_item is not None and g and self._drop_item < len(g["items"]):
             target = g["items"][self._drop_item]["path"]
         self._drop_item = None
+        tab = self._drop_tab
+        self._drop_tab = None
         if g is None or not accept_drag(e):
             return
         item = read_item(e.mimeData())
         dropped = parse_drop(e.mimeData()) if item is None else None
         gid = self.gid
-        QTimer.singleShot(0, lambda: self.c.handle_drop(gid, item, dropped, target))
+        QTimer.singleShot(0, lambda: self.c.handle_drop(gid, item, dropped, target, tab=tab))
         self.update()
 
 

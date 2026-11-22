@@ -164,6 +164,19 @@ def custom_to_theme(ct):
     return t
 
 
+def custom_from_builtin(name):
+    """A built-in theme as an editable custom-theme starting point (saved as a copy)."""
+    t = BUILT_IN.get(name, CLEAN_WHITE)
+
+    def hx(key, fallback):
+        v = t.get(key)
+        return QColor(*v[:3]).name() if isinstance(v, (tuple, list)) else fallback
+
+    return {"name": f"{name} (my copy)", "accent": t.get("default_accent", "#0A84FF"),
+            "tint": hx("glass_fill", "#FFFFFF"), "text": hx("panel_text", "#1C1C22"),
+            "blur": 50, "glow": 60 if t.get("glow") else 0, "roundness": 55}
+
+
 def windows_prefers_light():
     """True/False from Windows' app light/dark mode setting, None if unknown."""
     if sys.platform != "win32":

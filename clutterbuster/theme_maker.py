@@ -152,7 +152,7 @@ class ThemeMaker(GlassPanel):
         outer = QVBoxLayout(self.body)
         outer.setContentsMargins(18, 10, 18, 14)
         outer.setSpacing(10)
-        h1 = QLabel("Make a custom theme")
+        h1 = QLabel(("Edit theme: " + start.get("name", "")) if start else "Make a custom theme")
         h1.setObjectName("h1")
         outer.addWidget(h1)
         row = QHBoxLayout()

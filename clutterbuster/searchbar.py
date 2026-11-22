@@ -1,20 +1,20 @@
 """The always-visible bars at the top (on the desktop layer, behind your windows):
 
   [ magnifier  Search shortcuts and files...     Ctrl+Space ]   <- SearchBar
-                                                [ + New Group ] [ Auto ] [ Undo ]   <- ActionBar
+                                                [ + New Group ] [ gear ]   <- ActionBar
 
 Clicking the search box (or pressing Ctrl+Space anywhere) opens the quick search.
 In Edit layout both bars get a dashed outline and can be dragged somewhere else
 (they snap to a 16px grid). Outside Edit layout they stay put.
 """
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 
 from . import hotkey
 from .glass import DesktopLayerWindow, draw_edit_outline, draw_glass, draw_neon, draw_shadow
 from .theme import qcolor, rad
 
-SEARCH_W, NEW_W, AUTO_W, UNDO_W, GAP, H, M = 520, 150, 104, 96, 10, 46, 10
+SEARCH_W, NEW_W, GEAR_W, GAP, H, M = 520, 150, 52, 10, 46, 10
 
 
 class _Bar(DesktopLayerWindow):
@@ -151,30 +151,27 @@ class SearchBar(_Bar):
 
 
 class ActionBar(_Bar):
+    """[ + New Group ] [ gear ]  - the gear opens the compact glass menu (quickmenu.py)."""
     ui_key = "actions_pos"
 
     def __init__(self, controller):
         super().__init__(controller)
-        self.setFixedSize(NEW_W + AUTO_W + UNDO_W + 2 * GAP + 2 * M, H + 2 * M)
+        self.setFixedSize(NEW_W + GEAR_W + GAP + 2 * M, H + 2 * M)
         self._undo_enabled = False
         self._undo_label = ""
 
     def new_rect(self):
         return QRectF(M, M, NEW_W, H)
 
-    def auto_rect(self):
-        return QRectF(M + NEW_W + GAP, M, AUTO_W, H)
-
-    def undo_rect(self):
-        return QRectF(M + NEW_W + AUTO_W + 2 * GAP, M, UNDO_W, H)
+    def gear_rect(self):
+        return QRectF(M + NEW_W + GAP, M, GEAR_W, H)
 
     def boxes(self):
-        return [("new", self.new_rect()), ("auto", self.auto_rect()), ("undo", self.undo_rect())]
+        return [("new", self.new_rect()), ("gear", self.gear_rect())]
 
     def update_undo(self, enabled, label):
         self._undo_enabled = enabled
         self._undo_label = label
-        self.update()
 
     def paint_contents(self, p):
         bf = QFont(self.font())
@@ -183,21 +180,39 @@ class ActionBar(_Bar):
         p.setFont(bf)
         p.setPen(qcolor("button_text"))
         p.drawText(self.new_rect(), Qt.AlignCenter, "+  New Group")
-        p.drawText(self.auto_rect(), Qt.AlignCenter, "\u2728  Auto")
-        p.setPen(qcolor("button_text") if self._undo_enabled else qcolor("disabled_text"))
-        p.drawText(self.undo_rect(), Qt.AlignCenter, "\u21B6  Undo")
+        draw_gear(p, self.gear_rect().center(), 10.5, qcolor("button_text"))
 
     def on_hover(self, h):
         self.setCursor(Qt.PointingHandCursor if h else Qt.ArrowCursor)
-        tips = {"undo": (f"Undo: {self._undo_label}" if self._undo_enabled else "Nothing to undo"),
-                "new": "Make a new empty group",
-                "auto": "Automatically do it: suggest groups for your desktop (nothing changes until you click Apply)"}
+        tips = {"new": "Make a new empty group",
+                "gear": "Settings: auto organize, undo, themes, hide/lock, sound, transparency, tidy up..."}
         self.setToolTip(tips.get(h, ""))
 
     def on_click(self, key):
         if key == "new":
             self.c.create_group()
-        elif key == "auto":
-            self.c.auto_organize()
-        elif key == "undo" and self._undo_enabled:
-            self.c.undo()
+        elif key == "gear":
+            r = self.gear_rect()
+            self.c.show_quick_menu(QRect(self.mapToGlobal(r.topLeft().toPoint()), r.size().toSize()))
+
+
+def draw_gear(p, c, r, color):
+    """A simple cog: 8 teeth, a ring and a hole."""
+    import math
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    path = QPainterPath()
+    teeth = 8
+    pts = []
+    for i in range(teeth * 4):
+        a = (i / (teeth * 4)) * 2 * math.pi - math.pi / 2
+        rr = r if (i % 4) in (1, 2) else r * 0.74
+        pts.append(QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a)))
+    path.addPolygon(QPolygonF(pts))
+    path.closeSubpath()
+    hole = QPainterPath()
+    hole.addEllipse(c, r * 0.32, r * 0.32)
+    p.setPen(Qt.NoPen)
+    p.setBrush(color)
+    p.drawPath(path.subtracted(hole))
+    p.restore()

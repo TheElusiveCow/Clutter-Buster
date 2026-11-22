@@ -223,6 +223,21 @@ def start_item_drag(source, path, group_id, icon):
     return action, desktop_layer.escape_pressed()
 
 
+def draw_warn(p, center, r=8):
+    """A small orange warning dot with '!' (an item that couldn't be hidden)."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(255, 255, 255, 230), 1.2))
+    p.setBrush(QColor(255, 149, 0))
+    p.drawEllipse(center, r, r)
+    pen = QPen(QColor(255, 255, 255), max(1.6, r * 0.28))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(center.x(), center.y() - r * 0.45), QPointF(center.x(), center.y() + r * 0.1))
+    p.drawPoint(QPointF(center.x(), center.y() + r * 0.45))
+    p.restore()
+
+
 def draw_badge(p, center, count, color):
     """iOS-style count bubble in the group's accent color."""
     from PySide6.QtGui import QFont, QFontMetrics
@@ -332,8 +347,8 @@ class DesktopLayerWindow(QWidget):
         super().showEvent(e)
         self._hwnd = int(self.winId())
         desktop_layer.register(self._hwnd)
-        QTimer.singleShot(0, self.send_to_desktop_layer)
-        QTimer.singleShot(150, self.send_to_desktop_layer)
+        QTimer.singleShot(0, self, self.send_to_desktop_layer)     # cancelled if the window is deleted
+        QTimer.singleShot(150, self, self.send_to_desktop_layer)
 
     def hideEvent(self, e):
         super().hideEvent(e)

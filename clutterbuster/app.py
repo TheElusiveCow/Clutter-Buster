@@ -18,7 +18,7 @@ from .ledger import Hider, Ledger
 from .popup import GroupPopup
 from .quicksearch import QuickSearch
 from .searchbar import ActionBar, SearchBar
-from .store import Layout, UndoStack, new_group
+from .store import Layout, UndoStack, new_group, new_tab, tab_of
 from .theme import ACCENTS, DEFAULT_UI
 from .tray import Tray, broom_icon
 
@@ -51,6 +51,9 @@ class Controller:
         self.ledger = Ledger()
         self.hider = Hider(self.ledger)
         self.undo_stack = UndoStack()
+        self.redo_stack = []
+        self.failed_hides = set()     # norm paths Windows wouldn't let us hide (shown with an orange "!")
+        self.quick_menu = None
         self.widgets = {}
         self._told_about_show_hidden = False
         self.edit_mode = False
@@ -88,6 +91,12 @@ class Controller:
         self.undo_shortcut = QShortcut(QKeySequence.Undo, self.search)
         self.undo_shortcut.setContext(Qt.ApplicationShortcut)
         self.undo_shortcut.activated.connect(self.undo)
+        self.redo_shortcuts = []
+        for seq in (QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")):
+            sc = QShortcut(seq, self.search)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(self.redo)
+            self.redo_shortcuts.append(sc)
 
         # 3) Ctrl+Space everywhere (no Windows key needed)
         if not showcase:
@@ -217,7 +226,11 @@ class Controller:
         """A look slider moved (Edit layout toolbar or Settings) - applies live."""
         self._appearance_checkpoint()
         self.ui[key] = int(value)
+        if key == "per_row":
+            self.ui["popup_size"] = None     # the popup re-fits to the new number of columns
         self.apply_theme()
+        if key in ("per_row", "icon_size"):
+            self.rebuild_widgets()           # small tile previews + big panels follow live
         if self.toolbar is not None and self.toolbar.isVisible():
             self.toolbar.refresh_from_ui()
         self.schedule_save()
@@ -293,7 +306,7 @@ class Controller:
         self.schedule_save()
 
     def apply_dock_mode(self):
-        pinned = self.edit_mode or not self.layout.prefs.get("dock_autohide", True) or self.showcase
+        pinned = self.edit_mode or not self.layout.prefs.get("dock_autohide", False) or self.showcase
         self.dock.pinned = pinned
         if pinned:
             self.dock.show_dock()
@@ -448,7 +461,20 @@ class Controller:
     # ------------------------------------------------------------------ syncing
     def sync_hidden(self):
         statuses = self.hider.sync(self.layout.wanted_hidden())
-        return statuses, [p for p, s in statuses.items() if s == "failed"]
+        failed = [p for p, s in statuses.items() if s == "failed"]
+        self.failed_hides = {df.norm(p) for p in failed}
+        return statuses, failed
+
+    def hide_failed(self, path):
+        """True if this grouped item (or its same-named twin on the other desktop) is still visible
+        because Windows refused to hide it (usually the shared Public desktop)."""
+        if not self.failed_hides or df.is_url(path):
+            return False
+        n = df.norm(path)
+        if n in self.failed_hides:
+            return True
+        base = os.path.basename(n)
+        return any(os.path.basename(f) == base for f in self.failed_hides)
 
     def commit(self, undoable=True):
         """Save, back up, and refresh every window after a change."""
@@ -462,6 +488,7 @@ class Controller:
         if self.edit_mode:
             return      # Edit layout keeps ONE undo step for the whole session
         self.undo_stack.push(label, self.layout.snapshot())
+        self.redo_stack.clear()
 
     def update_undo_ui(self):
         en, label = self.undo_stack.can_undo(), self.undo_stack.next_label()
@@ -476,16 +503,24 @@ class Controller:
                 w.hide()
                 w.deleteLater()
         av = self.avail()
+        hide_all = bool(self.layout.prefs.get("groups_hidden"))
         for g in self.layout.groups:
             w = self.widgets.get(g["id"])
             if w is None:
                 w = GroupWidget(self, g["id"])
                 self.widgets[g["id"]] = w
+            if w._last_tab != g.get("tab"):
+                w._last_tab = g.get("tab")
+                w.page = 0
+                w._selected = None
             gw, gh = group_size(g)
             gw, gh = min(gw, av.width()), min(gh, av.height())
             x = min(max(g["x"], av.left()), av.right() - gw)
             y = min(max(g["y"], av.top()), av.bottom() - gh)
             w.setGeometry(x, y, gw, gh)
+            if hide_all:
+                w.hide()          # "Hide all groups": the groups go away, their items stay hidden
+                continue
             if not w.isVisible():
                 w.show()
             w.update()
@@ -610,23 +645,28 @@ class Controller:
         self.popup.open_group(gid, anchor)
 
     # ------------------------------------------------------------------ items
-    def handle_drop(self, gid, item, dropped, target=None):
-        """Something was dropped on a group (tile, panel or popup)."""
+    def handle_drop(self, gid, item, dropped, target=None, tab=None):
+        """Something was dropped on a group (tile, panel or popup), maybe right on one of its tabs."""
         if item:
             path, src = item
-            if target and df.norm(target) != df.norm(path):
+            if self.layout_locked() and src:
+                self.notify("The layout is locked - unlock it in the \u2699 menu to move things around.")
+                return
+            if tab and src == gid:
+                self.move_item_to_tab(gid, path, tab)
+            elif target and df.norm(target) != df.norm(path):
                 self.make_group_from(path, src, target, gid)
             elif src != gid:
-                self.move_item(path, src, gid)
+                self.move_item(path, src, gid, tab=tab)
             return
         if dropped:
             files, webs = dropped
-            self.add_items(gid, files, webs)
+            self.add_items(gid, files, webs, tab=tab)
 
     def add_paths(self, gid, paths_):
         return self.add_items(gid, paths_, [])
 
-    def add_items(self, gid, paths_, webs):
+    def add_items(self, gid, paths_, webs, tab=None):
         g = self.layout.group(gid)
         if g is None:
             return []
@@ -659,14 +699,17 @@ class Controller:
         if to_add:
             self.checkpoint("add items")
             now = datetime.datetime.now().isoformat(timespec="seconds")
+            dest_tab = tab if tab and tab_of(g, tab) else g["tab"]     # new things go to the tab you're on
             for it in to_add:
                 it["added"] = now
+                it["tab"] = dest_tab
                 g["items"].append(it)
             g["badge"] = int(g.get("badge") or 0) + len(to_add)
             failed, hid_any = [], False
+            statuses, _f = self.sync_hidden()       # also hides a same-named twin on the other desktop
             for it in to_add:
-                st = self.hider.hide(it["path"], gid)
-                if st == "failed":
+                st = statuses.get(it["path"])
+                if self.hide_failed(it["path"]):
                     failed.append(icons.item_name(it))
                 hid_any = hid_any or st == "hidden"
             if hid_any and not self._told_about_show_hidden and df.explorer_shows_hidden_files():
@@ -675,7 +718,9 @@ class Controller:
                              "desktop but look faded. That's normal!")
             if failed:
                 notes.append(", ".join(failed) + " is on the shared Public desktop, which needs admin rights "
-                             "to hide, so it's in the group and also stays on the desktop.")
+                             "to hide, so it's in the group and also stays on the desktop (marked with an "
+                             "orange !).")
+                log.warning("Could not hide (still on the desktop): %s", ", ".join(failed))
             self.commit()
         if notes:
             self.notify("\n".join(notes))
@@ -690,7 +735,7 @@ class Controller:
                 return g["items"].pop(i)
         return None
 
-    def move_item(self, path, src, dst):
+    def move_item(self, path, src, dst, tab=None):
         if self.layout.group(dst) is None or self.layout.group(src) is None:
             return
         self.checkpoint("move item")
@@ -699,6 +744,7 @@ class Controller:
             self.undo_stack.pop()
             return
         g = self.layout.group(dst)
+        it["tab"] = tab if tab and tab_of(g, tab) else g["tab"]
         g["items"].append(it)
         g["badge"] = int(g.get("badge") or 0) + 1
         self.sync_hidden()
@@ -718,6 +764,8 @@ class Controller:
         w, h = group_size({"mode": "tile"})
         pos = first_free_left(self.avail(), self.group_rects(), w, h)
         g = new_group("New Group", pos.x(), pos.y(), accent=accent)
+        for it in (a, b):
+            it["tab"] = g["tab"]
         g["items"] = [b, a]
         g["badge"] = 2
         self.layout.groups.append(g)
@@ -742,6 +790,10 @@ class Controller:
         """Drag one item. Dropped on a group/tab/dock: handled there. Dropped on the bare
         desktop: it leaves its group and shows on the desktop again (one Undo step)."""
         from .glass import start_item_drag
+        if self.layout_locked():
+            self.notify("The layout is locked - unlock it in the \u2699 menu to move things around. "
+                        "Clicking still opens things.")
+            return False
         action, cancelled = start_item_drag(source, path, gid, icons.icon_for(path))
         if action != Qt.IgnoreAction or cancelled:
             return False
@@ -832,6 +884,251 @@ class Controller:
             for url, _title in webs:
                 self.add_favorite(url)
 
+    # ------------------------------------------------------------------ tabs inside groups
+    def _refresh_group(self, gid):
+        w = self.widgets.get(gid)
+        if w is not None:
+            w.update()
+        if self.popup.isVisible() and self.popup.gid == gid:
+            self.popup.refresh()
+
+    def select_tab(self, gid, tid):
+        """Switch tab (remembered, not an undo step)."""
+        g = self.layout.group(gid)
+        if g is None or not tab_of(g, tid) or g.get("tab") == tid:
+            return
+        g["tab"] = tid
+        w = self.widgets.get(gid)
+        if w is not None:
+            w._last_tab, w.page, w._selected = tid, 0, None
+        if self.popup.gid == gid:
+            self.popup.tab_changed()
+        self._refresh_group(gid)
+        self.schedule_save()
+
+    def add_tab(self, gid, name=None):
+        g = self.layout.group(gid)
+        if g is None:
+            return None
+        self.checkpoint("add tab")
+        existing = {t["name"] for t in g["tabs"]}
+        if len(g["tabs"]) == 1 and g["tabs"][0]["name"] == "All":
+            g["tabs"][0]["name"] = "Main"       # "All" would be confusing once there are two
+            existing = {"Main"}
+        n = len(g["tabs"]) + 1
+        name = name or f"Tab {n}"
+        while name in existing:
+            n += 1
+            name = f"Tab {n}"
+        t = new_tab(name)
+        g["tabs"].append(t)
+        g["tab"] = t["id"]
+        self.commit()
+        if self.popup.gid == gid:
+            self.popup.tab_changed()
+        return t["id"]
+
+    def rename_tab(self, gid, tid, name):
+        g = self.layout.group(gid)
+        t = tab_of(g, tid) if g else None
+        name = (name or "").strip()[:40]
+        if t is None or not name or name == t["name"]:
+            return
+        self.checkpoint("rename tab")
+        t["name"] = name
+        self.commit()
+
+    def move_tab(self, gid, tid, delta):
+        g = self.layout.group(gid)
+        if g is None:
+            return
+        ids = [t["id"] for t in g["tabs"]]
+        if tid not in ids:
+            return
+        i = ids.index(tid)
+        j = i + delta
+        if not 0 <= j < len(ids):
+            return
+        self.checkpoint("move tab")
+        g["tabs"][i], g["tabs"][j] = g["tabs"][j], g["tabs"][i]
+        self.commit()
+
+    def set_tab_view(self, gid, tid, view):
+        g = self.layout.group(gid)
+        t = tab_of(g, tid) if g else None
+        if t is None or t.get("view") == view:
+            return
+        self.checkpoint("tab view")
+        t["view"] = view
+        w = self.widgets.get(gid)
+        if w is not None:
+            w.page = 0
+        self.commit()
+        if self.popup.gid == gid:
+            self.popup.tab_changed()
+
+    def delete_tab(self, gid, tid, confirm=True):
+        g = self.layout.group(gid)
+        t = tab_of(g, tid) if g else None
+        if t is None or len(g["tabs"]) < 2:
+            return
+        rest = [x for x in g["tabs"] if x["id"] != tid]
+        n = sum(1 for it in g["items"] if it.get("tab") == tid)
+        if confirm and n and not ask("Delete tab?", f"Delete the tab \"{t['name']}\"?\n\nIts {n} item"
+                                     f"{'s' if n != 1 else ''} move to \"{rest[0]['name']}\". Nothing is "
+                                     "deleted from your PC. You can Undo this.", yes_text="Delete tab"):
+            return
+        self.checkpoint("delete tab")
+        for it in g["items"]:
+            if it.get("tab") == tid:
+                it["tab"] = rest[0]["id"]
+        g["tabs"] = rest
+        if g.get("tab") == tid:
+            g["tab"] = rest[0]["id"]
+        self.commit()
+        if self.popup.gid == gid:
+            self.popup.tab_changed()
+
+    def move_item_to_tab(self, gid, path, tid):
+        g = self.layout.group(gid)
+        if g is None or not tab_of(g, tid):
+            return
+        it = next((x for x in g["items"] if df.norm(x["path"]) == df.norm(path)), None)
+        if it is None or it.get("tab") == tid:
+            return
+        self.checkpoint("move to tab")
+        it["tab"] = tid
+        self.commit()
+
+    def tab_menu(self, gid, tid, gpos, widget):
+        g = self.layout.group(gid)
+        t = tab_of(g, tid) if g else None
+        if t is None:
+            return
+        ids = [x["id"] for x in g["tabs"]]
+        i = ids.index(tid)
+        m = QMenu()
+        m.addAction("Rename...", lambda: widget.start_tab_rename(tid))
+        left = m.addAction("Move left", lambda: self.move_tab(gid, tid, -1))
+        left.setEnabled(i > 0)
+        right = m.addAction("Move right", lambda: self.move_tab(gid, tid, 1))
+        right.setEnabled(i < len(ids) - 1)
+        view = m.addMenu("View")
+        for key, label in (("icons", "Icons"), ("list", "List (name, date, type)")):
+            a = view.addAction(label, lambda k=key: self.set_tab_view(gid, tid, k))
+            a.setCheckable(True)
+            a.setChecked(t.get("view", "icons") == key)
+        m.addAction("+  New tab", lambda: self._new_tab_and_rename(gid, widget))
+        m.addSeparator()
+        d = m.addAction("Delete tab (items move to the first tab)...", lambda: self.delete_tab(gid, tid))
+        d.setEnabled(len(ids) > 1)
+        m.exec(gpos)
+
+    def add_tab_from_menu(self, gid, widget):
+        g = self.layout.group(gid)
+        if g is None:
+            return
+        if g.get("mode") == "panel":
+            self._new_tab_and_rename(gid, widget)
+        else:                       # small tile: tabs live in its popup
+            if not (self.popup.isVisible() and self.popup.gid == gid):
+                self.open_group(gid)
+            self._new_tab_and_rename(gid, self.popup)
+
+    def _new_tab_and_rename(self, gid, widget):
+        tid = self.add_tab(gid)
+        if tid and hasattr(widget, "start_tab_rename"):
+            QTimer.singleShot(60, lambda: widget.start_tab_rename(tid))
+
+    # ------------------------------------------------------------------ name style
+    def name_style_dialog(self, gid=None):
+        """gid=None: the default for all groups (Settings > Appearance)."""
+        from .namestyle_dialog import NameStyleDialog
+        dlg = NameStyleDialog(self, gid)
+        dlg.show_on_top()
+        return dlg
+
+    def set_name_style(self, gid, style):
+        """style = dict of overrides, or None/{} to follow the default. One undo step."""
+        style = {k: v for k, v in (style or {}).items() if v not in (None, "", 0, "auto") or k == "bold" and v is False}
+        if gid is None:
+            if (self.ui.get("name_style") or {}) == style:
+                return
+            self.checkpoint("name style (all groups)")
+            self.ui["name_style"] = style
+        else:
+            g = self.layout.group(gid)
+            if g is None or (g.get("name_style") or {}) == style:
+                return
+            self.checkpoint("name style")
+            if style:
+                g["name_style"] = style
+            else:
+                g.pop("name_style", None)
+        self.commit()
+
+    # ------------------------------------------------------------------ the gear menu
+    def layout_locked(self):
+        return bool(self.layout.prefs.get("locked")) and not self.edit_mode
+
+    def set_locked(self, on):
+        self.layout.prefs["locked"] = bool(on)
+        self.layout.save()
+        for w in self.widgets.values():
+            w.update()
+        self.tray.refresh_toggles()
+        log.info("Layout %s", "locked" if on else "unlocked")
+
+    def set_groups_hidden(self, on):
+        """Hide/show every group window. Items inside groups stay hidden on the desktop either way."""
+        self.layout.prefs["groups_hidden"] = bool(on)
+        self.layout.save()
+        if on and self.popup.isVisible():
+            self.popup.close_animated()
+        self.rebuild_widgets()
+        self.tray.refresh_toggles()
+        log.info("Groups %s", "hidden" if on else "shown")
+
+    def toggle_groups_hidden(self):
+        self.set_groups_hidden(not self.layout.prefs.get("groups_hidden"))
+
+    def tidy_up(self):
+        """Snap every group to the 16 px grid without overlaps (one undo step)."""
+        if not self.layout.groups:
+            return
+        self.checkpoint("tidy up")
+        placed = []
+        av = self.avail()
+        for g in sorted(self.layout.groups, key=lambda g: (g["y"], g["x"])):
+            w, h = group_size(g)
+            pt = snap_rect(g["x"], g["y"], w, h, av, placed)
+            g["x"], g["y"] = pt.x(), pt.y()
+            placed.append(QRect(pt.x(), pt.y(), w, h))
+        self.commit()
+        log.info("Tidied up %d group(s)", len(self.layout.groups))
+
+    def show_quick_menu(self, anchor=None):
+        from .quickmenu import QuickMenu
+        if self.quick_menu is not None and self.quick_menu.isVisible():
+            self.quick_menu.close()
+            return
+        self.quick_menu = QuickMenu(self)
+        self.quick_menu.open_at(anchor)
+        return self.quick_menu
+
+    def edit_theme(self, name=None):
+        """Edit any theme: your own ones in place; a built-in one as a copy."""
+        from .theme_maker import ThemeMaker
+        name = name or self.theme_name
+        start = next((t for t in self.layout.custom_themes if t.get("name") == name), None)
+        if start is None:
+            start = theme.custom_from_builtin(name)
+        self._maker = ThemeMaker(self, start=start)
+        av = self.avail()
+        self._maker.move(av.center().x() - self._maker.width() // 2, av.center().y() - self._maker.height() // 2)
+        self._maker.show_on_top()
+        return self._maker
+
     # ------------------------------------------------------------------ menus
     def group_menu(self, gid, widget, gpos):
         g = self.layout.group(gid)
@@ -840,6 +1137,8 @@ class Controller:
         m = QMenu()
         m.addAction("Open", lambda: self.open_group(gid))
         m.addAction("Rename...", widget.start_rename)
+        m.addAction("Name style...", lambda: self.name_style_dialog(gid))
+        m.addAction("+  Add a tab", lambda: self.add_tab_from_menu(gid, widget))
         if self.edit_mode:
             m.addAction("\u2713  Done editing layout", self.exit_edit_mode)
         else:
@@ -1013,9 +1312,23 @@ class Controller:
             self.notify("Nothing to undo.")
             return
         label, snap = item
+        self.redo_stack.append((label, self.layout.snapshot()))
         self.layout.restore(snap)
         self._after_restore()
         log.info("Undid: %s", label)
+
+    def can_redo(self):
+        return bool(self.redo_stack) and not self.edit_mode
+
+    def redo(self):
+        if not self.can_redo():
+            self.notify("Nothing to redo.")
+            return
+        label, snap = self.redo_stack.pop()
+        self.undo_stack.push(label, self.layout.snapshot())
+        self.layout.restore(snap)
+        self._after_restore()
+        log.info("Redid: %s", label)
 
     def _after_restore(self):
         self.sync_hidden()
@@ -1195,4 +1508,8 @@ def run(argv):
     controller = Controller(app)
     controller.attach_server(server)
     app._cb_controller = controller
-    return app.exec()
+    rc = app.exec()
+    # Everything is saved and the desktop restored by now (aboutToQuit). Leave right away instead
+    # of letting Python tear the Qt windows down one by one, which can crash on the way out.
+    logging.shutdown()
+    os._exit(rc)

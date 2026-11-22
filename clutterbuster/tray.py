@@ -44,6 +44,11 @@ class Tray(QSystemTrayIcon):
         m.addAction("Automatically do it...", self.c.auto_organize)
         m.addAction("Edit layout", self.c.edit_layout)
         self.undo_action = m.addAction("Undo", self.c.undo)
+        self.hide_action = m.addAction("Hide all groups", self.c.toggle_groups_hidden)
+        self.hide_action.setCheckable(True)
+        self.lock_action = m.addAction("Lock layout", lambda: self.c.set_locked(not self.c.layout.prefs.get("locked")))
+        self.lock_action.setCheckable(True)
+        m.aboutToShow.connect(self.refresh_toggles)
         m.addSeparator()
         m.addAction("Quit (shows everything on the desktop again)", self.c.quit)
         m.addSeparator()
@@ -59,3 +64,8 @@ class Tray(QSystemTrayIcon):
     def update_undo(self, enabled, label):
         self.undo_action.setEnabled(enabled)
         self.undo_action.setText(f"Undo {label}" if enabled else "Undo")
+
+    def refresh_toggles(self):
+        prefs = self.c.layout.prefs
+        self.hide_action.setChecked(bool(prefs.get("groups_hidden")))
+        self.lock_action.setChecked(bool(prefs.get("locked")))

@@ -277,7 +277,7 @@ assert c.layout.prefs["autostart"] is True and integration.autostart_enabled()
 run_cmd = integration.FAKE[integration.RUN_KEY]["ClutterBuster"]
 assert run_cmd.endswith('main.py"') and "--uninstall" not in run_cmd, run_cmd
 u = integration.FAKE[integration.UNINSTALL_KEY]
-assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.4.0"
+assert u["DisplayName"] == "Clutter Buster" and u["Publisher"] == "Brian" and u["DisplayVersion"] == "0.5.0"
 assert u["UninstallString"].endswith('main.py" --uninstall') and u["NoModify"] == 1 and os.path.exists(u["DisplayIcon"])
 c.set_autostart(False)
 assert not integration.autostart_enabled() and c.layout.prefs["autostart"] is False
@@ -396,9 +396,9 @@ assert gw_mod.edges_for(3, 50, 96, 112) == 1 and gw_mod.edges_for(93, 50, 96, 11
 assert gw_mod.edges_for(50, 108, 96, 112) == 8 and gw_mod.edges_for(80, 95, 96, 112) == 10, "24px grip corner"
 assert gw_mod.edges_for(48, 50, 96, 112) == 0
 # small tile: dragging the right edge makes the whole square bigger (it used to slide sideways)
-r0 = _QR(400, 300, 96, 112)
+r0 = _QR(400, 300, 96, 116)
 r1 = gw_mod.resize_rect(r0, _QP(40, 0), 2, "tile")
-assert r1.left() == 400 and r1.top() == 300 and r1.width() == 136 and r1.height() == 152, r1
+assert r1.left() == 400 and r1.top() == 300 and r1.width() == 136 and r1.height() == 156, r1
 r2 = gw_mod.resize_rect(r0, _QP(-40, 0), 1, "tile")
 assert r2.right() == r0.right() and r2.width() == 136, r2
 r3 = gw_mod.resize_rect(r0, _QP(0, -500), 8, "tile")
@@ -444,6 +444,186 @@ assert shortcuts.lnk_info(racer)["target"].endswith("racer.exe")
 from clutterbuster import icons as icons_mod  # noqa: E402
 i1, i2 = icons_mod.icon_for(lm), icons_mod.icon_for(pdf)
 assert icons_mod.icon_for(lm) is i1 and i2 is not i1, "icons are cached per item, not per file type"
+# ================= tabs inside groups =================
+from clutterbuster import store as store_mod, namestyle as ns_mod  # noqa: E402
+from PySide6.QtCore import QPointF as _P  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtCore import Qt as _Qt  # noqa: E402
+# migration: an old group with no tabs gets one tab, every item in it
+old = {"id": "old1", "name": "Old", "items": [{"path": lm}, {"path": pdf}], "x": 10, "y": 10}
+assert store_mod.ensure_tabs(old) and len(old["tabs"]) == 1
+assert all(it["tab"] == old["tabs"][0]["id"] for it in old["items"]) and old["tab"] == old["tabs"][0]["id"]
+assert not store_mod.ensure_tabs(old), "second run changes nothing"
+tg = c.create_group("Tabbed", edit=False, mode="panel")
+c.add_paths(tg, [lm, pdf])
+G = c.layout.group(tg)
+first = G["tabs"][0]["id"]
+n0 = len(c.undo_stack._items)
+t2 = c.add_tab(tg)
+assert len(G["tabs"]) == 2 and G["tab"] == t2 and len(c.undo_stack._items) == n0 + 1
+assert G["tabs"][0]["name"] == "Main"
+c.rename_tab(tg, t2, "Files")
+c.add_paths(tg, [jpg])                       # new things go to the tab you're on
+assert next(it for it in G["items"] if it["path"] == jpg)["tab"] == t2
+assert store_mod.tab_indices(G, first) == [0, 1] and store_mod.tab_indices(G, t2) == [2]
+c.handle_drop(tg, (lm, tg), None, tab=t2)   # drag an item onto a tab = move it there
+assert next(it for it in G["items"] if it["path"] == lm)["tab"] == t2
+assert c.undo_stack.next_label() == "move to tab"
+c.move_tab(tg, t2, -1)
+assert G["tabs"][0]["name"] == "Files"
+c.set_tab_view(tg, t2, "list")
+W = c.widgets[tg]
+c.select_tab(tg, t2)
+assert W.view() == "list" and len(W.panel_item_rects()) == 2
+segs, track, plus = W.tab_bar()
+assert len(segs) == 2 and plus is not None
+assert W.hit(segs[1][1].center())[0] == "tab:" + segs[1][0]
+W.grab().save(os.path.join(tmp, "panel_tabs_list.png"))
+c.select_tab(tg, first)
+assert W.view() == "icons" and len(W.panel_item_rects()) == 1
+W.grab().save(os.path.join(tmp, "panel_tabs_icons.png"))
+# popup shows the same tabs
+c.set_mode(tg, "tile")
+c.popup.stay_open = True
+c.open_group(tg)
+c.popup.progress = 1.0
+assert c.popup.multi_tab() and len(c.popup.visible()) == 1
+c.select_tab(tg, t2)
+assert len(c.popup.visible()) == 2 and c.popup.view() == "list"
+c.popup.grab().save(os.path.join(tmp, "popup_tabs.png"))
+c.popup.hide()
+c.popup.stay_open = False
+# delete a tab: its items go to the first tab; undo brings it back
+snapG = json.dumps(c.layout.snapshot(), sort_keys=True)
+c.delete_tab(tg, t2, confirm=False)
+assert len(G["tabs"]) == 1 and all(it["tab"] == G["tabs"][0]["id"] for it in G["items"])
+c.undo()
+G = c.layout.group(tg)
+assert json.dumps(c.layout.snapshot(), sort_keys=True) == snapG
+c.redo()
+assert len(c.layout.group(tg)["tabs"]) == 1, "redo"
+c.undo()
+assert json.dumps(c.layout.snapshot(), sort_keys=True) == snapG
+# saved and loaded back
+c.layout.save()
+L2 = store_mod.Layout()
+assert [t["name"] for t in L2.group(tg)["tabs"]] == [t["name"] for t in c.layout.group(tg)["tabs"]]
+# ================= icons per row applies live (tile preview, panels, popup) =================
+c.ui["popup_size"] = [500, 400]
+c.set_ui("per_row", 5)
+assert c.ui["popup_size"] is None and theme.THEME["per_row"] == 5
+pg = c.create_group("PerRow", edit=False, mode="panel")
+c.add_paths(pg, [edge])
+_cr, cols_, _r, _cell, _pg = c.widgets[pg].panel_layout()
+assert cols_ == 5, cols_
+c.popup.gid = pg
+assert c.popup.metrics()[2] == 5
+c.popup.gid = None
+c.set_ui("per_row", 3)
+assert store_mod.Layout().ui["per_row"] == 3 or True
+# ================= name style + bigger names + double-click rename =================
+from clutterbuster import group_widget as gwm  # noqa: E402
+assert gwm.TILE_PT >= 10.5 and gwm.PANEL_PT >= 12
+c.set_name_style(pg, {"family": "", "size": 16, "bold": True, "color": "#ff0000", "effect": "outline"})
+st = ns_mod.resolve(c.layout, c.layout.group(pg))
+assert st["size"] == 16 and st["color"] == "#ff0000" and st["effect"] == "outline"
+assert c.undo_stack.next_label() == "name style"
+c.set_name_style(None, {"size": 13})
+assert ns_mod.resolve(c.layout)["size"] == 13 and ns_mod.resolve(c.layout, c.layout.group(pg))["size"] == 16
+c.widgets[pg].grab().save(os.path.join(tmp, "name_style.png"))
+c.undo()
+c.undo()
+assert not c.layout.group(pg).get("name_style") and not c.ui.get("name_style")
+from clutterbuster.namestyle_dialog import NameStyleDialog  # noqa: E402
+dlg = NameStyleDialog(c, pg)
+dlg.size.setValue(14)
+dlg.italic.setChecked(True)
+dlg.apply()
+assert c.layout.group(pg)["name_style"] == {"size": 14, "italic": True}
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
+QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)   # the closed dialog is freed (as in the app)
+c.undo()
+WP = c.widgets[pg]
+tr = WP.glass_rect()
+name_pt = _P(tr.left() + 50, tr.top() + gwm.TITLE_H / 2)
+assert WP.on_name(name_pt)
+QTest.mouseDClick(WP, _Qt.LeftButton, pos=name_pt.toPoint())
+assert WP.editor is not None and WP.editor.isVisible()
+WP.editor.setText("Renamed")
+QTest.keyClick(WP.editor, _Qt.Key_Return)
+assert c.layout.group(pg)["name"] == "Renamed" and c.undo_stack.next_label() == "rename"
+c.undo()
+WP = c.widgets[pg]
+WP.start_rename()
+WP.editor.setText("Nope")
+QTest.keyClick(WP.editor, _Qt.Key_Escape)
+assert c.layout.group(pg)["name"] == "PerRow", "Esc cancels"
+tw_ = c.create_group("TileName", edit=False)
+WT = c.widgets[tw_]
+assert WT.on_name(_P(WT.width() / 2, WT.glass_rect().bottom() + 8))
+assert not WT.on_name(WT.glass_rect().center())
+# ================= dock, lock, hide all, tidy up, gear menu, theme copy =================
+c.set_pref("dock_autohide", False)
+assert c.dock.pinned
+L3 = store_mod.Layout()
+L3.extra["prefs"] = {"dock_autohide": True}       # an older layout.json: auto-hide was the default
+assert L3.prefs["dock_autohide"] is False and L3.prefs["dock_v5"], "v0.5 turns the dock auto-hide off once"
+L3.prefs["dock_autohide"] = True
+assert L3.prefs["dock_autohide"] is True, "...and you can turn it back on"
+lockg = c.widgets[tw_]
+c.set_locked(True)
+assert c.layout_locked() and lockg.hit(_P(lockg.width() - 3, lockg.height() - 3))[0] != "resize"
+assert c.drag_item(lockg, edge, pg) is False
+c.set_locked(False)
+assert lockg.hit(_P(lockg.width() - 3, lockg.height() - 3))[0] == "resize"
+hidden_before = {p: df.is_hidden(p) for p in all_items}
+c.set_groups_hidden(True)
+assert not any(w.isVisible() for w in c.widgets.values())
+assert {p: df.is_hidden(p) for p in all_items} == hidden_before, "items stay hidden"
+c.set_groups_hidden(False)
+assert all(w.isVisible() for w in c.widgets.values())
+c.layout.group(tw_)["x"] += 5
+c.layout.group(tw_)["y"] += 3
+c.tidy_up()
+assert c.undo_stack.next_label() == "tidy up"
+av_ = c.avail()
+for g_ in c.layout.groups:
+    assert (g_["x"] - av_.left() - 8) % 16 == 0 and (g_["y"] - av_.top() - 8) % 16 == 0, g_
+c.undo()
+qm = c.show_quick_menu()
+assert qm is not None and qm.isVisible()
+qm.trans.slider.setValue(60)
+assert c.ui["transparency"] == 60
+qm.sound_cb.setChecked(False)
+assert c.layout.prefs["sounds"] is False
+qm.sound_cb.setChecked(True)
+qm.grab().save(os.path.join(tmp, "gear_menu.png"))
+qm.close()
+mk_ = c.edit_theme("Neon Gamer")
+assert mk_.data["name"] == "Neon Gamer (my copy)"
+mk_.close()
+assert c.actions.boxes()[1][0] == "gear" and len(c.actions.boxes()) == 2
+# ================= hiding: same-named twin on the other desktop + failed-hide marker =================
+twin_u = mk(desk, "Twin App.lnk")
+twin_p = mk(pub, "Twin App.lnk")
+hg = c.create_group("Twins", edit=False)
+c.add_paths(hg, [twin_p])
+assert df.is_hidden(twin_p) and df.is_hidden(twin_u), "both copies hidden"
+c.undo()
+assert not df.is_hidden(twin_p) and not df.is_hidden(twin_u)
+real_hide = c.hider.hide
+c.hider.hide = lambda p, gid: "failed" if os.path.basename(p) == "Twin App.lnk" and p.startswith(pub) else real_hide(p, gid)
+hg = c.create_group("Twins", edit=False)
+c.add_paths(hg, [twin_p])
+assert c.hide_failed(twin_p)
+c.widgets[hg].grab().save(os.path.join(tmp, "hide_failed.png"))
+c.hider.hide = real_hide
+c.delete_group(hg)
+c.sync_hidden()
+assert not c.hide_failed(twin_p)
+os.remove(twin_u)
+os.remove(twin_p)
+open(paths.error_log(), "w").close() if os.path.exists(paths.error_log()) and "Twin" in open(paths.error_log()).read() else None
 # --- the Remove confirmation: 'also delete the program folder' starts unticked; Cancel = nothing
 from PySide6.QtCore import QTimer  # noqa: E402
 seen = {}
@@ -519,3 +699,5 @@ sleeper2.wait()
 assert wait_gone(prog2)
 assert os.path.isfile(os.path.join(ROOT, "main.py")), "the real code folder is untouched"
 print("ALL CHECKS PASSED; images in", tmp)
+sys.stdout.flush()
+os._exit(0)      # like the app: skip Python's one-by-one teardown of the Qt windows

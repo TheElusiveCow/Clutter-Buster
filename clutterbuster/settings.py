@@ -148,6 +148,15 @@ class SettingsWindow(GlassPanel):
             r.changed.connect(self.c.set_ui)
             self.rows[key] = r
             lay.addWidget(r)
+        nrow = QHBoxLayout()
+        names = QPushButton("Aa  Group names...")
+        names.setCursor(Qt.PointingHandCursor)
+        names.setToolTip("Font, size, color and shadow/outline for every group's name "
+                         "(right-click a group > Name style... to change just one)")
+        names.clicked.connect(lambda: self.c.name_style_dialog(None))
+        nrow.addWidget(names)
+        nrow.addStretch(1)
+        lay.addLayout(nrow)
         lay.addStretch(1)
         self.fill_themes()
         return w
@@ -172,11 +181,12 @@ class SettingsWindow(GlassPanel):
 
     def _dock(self):
         w, lay = self._page("Dock")
-        self.autohide = QCheckBox("Hide the favorites dock until the mouse comes near")
+        self.autohide = QCheckBox("Auto-hide the favorites dock (show it when the mouse comes near)")
         self.autohide.setChecked(bool(self.c.layout.prefs["dock_autohide"]))
         self.autohide.toggled.connect(lambda v: self.c.set_pref("dock_autohide", bool(v)))
         lay.addWidget(self.autohide)
-        lay.addWidget(_hint("When it's hidden, a thin handle under the search bar shows where it is. "
+        lay.addWidget(_hint("Off (the default): the dock is always there, on the desktop behind your windows. "
+                            "On: it tucks away and a thin handle under the search bar shows where it is. "
                             "Drag shortcuts or links onto the dock to add favorites; right-click to remove."))
         lay.addStretch(1)
         return w

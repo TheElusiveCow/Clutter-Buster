@@ -84,7 +84,7 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
   *Remove Clutter Buster* button.
 
 ### Stage 4
-- **Automatically do it** (the **✨ Auto** button by + New Group, the broom icon menu, or
+- **Automatically do it** (the **gear** button by + New Group > *Auto organize*, the broom icon menu, or
   Settings > General): looks at the visible items on your desktop (yours and the Public one)
   and suggests groups by name, file type and where a shortcut points - **Games** (Steam, EA,
   Epic, anything inside a games/steamapps folder), **AI** (LM Studio, ComfyUI, Ollama, Cursor...),
@@ -98,7 +98,40 @@ Or use the broom icon by the clock > **Quit**. It **starts with Windows** by its
 - **Start with Windows**: on by default; Settings > General has the switch. It's a normal
   per-user "Run" entry (no admin), so it also shows in Task Manager > Startup apps.
 - **Settings > Apps**: Clutter Buster now appears in Windows Settings > Apps > Installed apps
-  (with the broom icon, publisher Brian, version 0.4.0) and can be uninstalled from there.
+  (with the broom icon, publisher Brian, version 0.5.0) and can be uninstalled from there.
+
+### Version 0.5: tabs, name styles, the gear menu
+- **Tabs inside groups.** Every group starts with one tab (no tab bar shown). Click the small
+  **+** (top right of a popup or big panel, or right-click a group > *Add a tab*) to add one and
+  type its name. Then a pill-shaped tab bar shows at the top - right on the desktop for big
+  panels - and clicking a tab switches in place. **Right-click a tab**: Rename, Move left/right,
+  View (Icons or **List** with Name / Date modified / Type columns - click selects, double-click
+  opens), New tab, Delete (its items move to the first tab). Drag an item onto a tab's name to
+  move it there; new things you drop in go to the tab you're looking at. Each tab has its own
+  pages; the last tab you used is remembered; small tiles preview the first tab; the badge
+  counts all tabs. Every change is one Undo step. Older layouts get one tab per group
+  automatically (a copy of the old `layout.json` is kept in `backups\before-tabs-....json`).
+- **Bigger names + Name style.** Group names are bigger now (11 pt under tiles, 12.5 pt on
+  panels - Windows scales points for your display). **Double-click a name** to rename it right
+  there (Enter saves, Esc cancels). Right-click a group > **Name style...** picks any font on
+  your PC, size, bold/italic, color and a shadow or outline, with a live preview.
+  **Settings > Appearance > Group names...** sets the default for every group; a group's own
+  style wins. Anything left on "Default" follows the theme.
+- **Icons per row** now really applies, live: the small tile previews, the big panels and the
+  popup all follow it (before, the tile preview was fixed at 3 x 3 and panels ignored it).
+- **The gear (Settings) button** next to *+ New Group* opens a small glass menu: Auto organize,
+  Undo / Redo (Ctrl+Z / Ctrl+Y), Themes + **Edit theme...** (built-in themes are saved as your
+  own copy), **Hide all groups** (their items stay hidden; also in the broom menu),
+  **Lock layout** (no moving, resizing or rearranging; clicks still open things; also in the
+  broom menu), Group transparency, **Tidy up** (snaps every group to the grid, one Undo step),
+  Sound on/off + volume, and *All settings...*.
+- **The favorites dock stays visible** (still behind your windows). Settings > Dock can turn
+  auto-hide back on.
+- **Couldn't hide?** If Windows refuses to hide an item (usually a shortcut on the shared Public
+  desktop that needs admin permission), its group shows a small orange **!** and the tooltip
+  names it. If the same shortcut exists on both your desktop and the Public one, both copies
+  are hidden.
+- **Resizing** groups: a wider grab zone on every edge and a corner grip (diagonal lines).
 
 ## Uninstall / remove
 Any of these does the same thing:
@@ -130,7 +163,10 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/quicksearch.py` | The Ctrl+Space search window. |
 | `clutterbuster/fuzzy.py` | The forgiving search matching. |
 | `clutterbuster/hotkey.py` | Registers Ctrl+Space with Windows. |
-| `clutterbuster/searchbar.py` | The search bar, and the + New Group / Auto / Undo buttons. |
+| `clutterbuster/searchbar.py` | The search bar, and the + New Group and gear buttons. |
+| `clutterbuster/quickmenu.py` | The gear menu (auto organize, undo/redo, themes, hide/lock, sound, transparency, tidy up). |
+| `clutterbuster/tabs.py` | Tabs inside groups: the pill tab bar and the List view. |
+| `clutterbuster/namestyle.py` / `namestyle_dialog.py` | How group names look, and the Name style window. |
 | `clutterbuster/winicons.py` | Real, sharp icons for each item, looked up like Explorer does (shortcut icon locations, .url icon files, 256 px). |
 | `clutterbuster/shortcuts.py` | Reads where .lnk / .url shortcuts point and where their pictures come from (read-only). |
 | `clutterbuster/organize.py` | *Automatically do it*: reads names, file types and shortcut targets and suggests groups (read-only). |
@@ -141,7 +177,7 @@ In Cursor choose **File > Open Folder...** and pick `C:\Users\Brian\CodeProjects
 | `clutterbuster/settings.py` | The glass Settings window. |
 | `clutterbuster/theme_maker.py` | The custom theme maker with its live preview. |
 | `clutterbuster/glasswin.py` | Shared look for the glass dialog windows (buttons, sliders). |
-| `clutterbuster/dock.py` | The auto-hiding favorites dock. |
+| `clutterbuster/dock.py` | The favorites dock (always visible; auto-hide is optional). |
 | `clutterbuster/tray.py` | The broom icon by the clock and its menu. |
 | `clutterbuster/ledger.py` | The written list of everything the app hid, and the hide/un-hide rules. |
 | `clutterbuster/desktop_files.py` | Finds your desktop folders and flips the Hidden checkbox. Nothing else. |
