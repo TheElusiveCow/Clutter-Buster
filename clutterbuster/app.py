@@ -234,21 +234,52 @@ class Controller:
         self.schedule_save()
 
     def toolbar_snap_corner(self, geo, cursor=None):
-        """While the toolbar is dragged: the screen corner it would tuck into (or None)."""
+        """While the toolbar is dragged: the screen corner it would tuck into (or None).
+
+        Everything is in Qt's logical pixels (Windows' 150 % scaling is already applied) and
+        measured against the primary screen's work area (above the taskbar). It snaps when
+        EITHER the mouse is near a corner OR the toolbar is pushed into one - the toolbar is
+        clamped onto the screen first, because the grip is at the bar's far left: pushing the
+        bar against the top-right corner leaves the mouse ~700 px away (v0.6.0 only looked at
+        the unclamped window, so on Brian's PC it never snapped)."""
         av = self.avail()
         m = 10      # the toolbar's transparent margin
-        pts = {"tl": (QPoint(geo.left() + m, geo.top() + m), av.topLeft()),
-               "tr": (QPoint(geo.right() - m, geo.top() + m), av.topRight()),
-               "bl": (QPoint(geo.left() + m, geo.bottom() - m), av.bottomLeft()),
-               "br": (QPoint(geo.right() - m, geo.bottom() - m), av.bottomRight())}
+        w, h = geo.width(), geo.height()
+        x = min(max(geo.left(), av.left() - m), av.right() - w + 1 + m)
+        y = min(max(geo.top(), av.top() - m), av.bottom() - h + 1 + m)
+        g = QRect(x, y, w, h).adjusted(m, m, -m, -m)
+        pts = {"tl": (g.topLeft(), av.topLeft()), "tr": (g.topRight(), av.topRight()),
+               "bl": (g.bottomLeft(), av.bottomLeft()), "br": (g.bottomRight(), av.bottomRight())}
         best = None
         for k, (mine, scr) in pts.items():
-            d = (mine - scr).manhattanLength()
+            dx, dy = abs(mine.x() - scr.x()), abs(mine.y() - scr.y())
+            hit = dx <= TOOLBAR_SNAP and dy <= TOOLBAR_SNAP
+            d = dx + dy
             if cursor is not None:
-                d = min(d, (cursor - scr).manhattanLength())
-            if d <= TOOLBAR_SNAP * 1.4 and (best is None or d < best[0]):
+                cx, cy = abs(cursor.x() - scr.x()), abs(cursor.y() - scr.y())
+                if cx <= TOOLBAR_SNAP and cy <= TOOLBAR_SNAP:
+                    hit, d = True, min(d, cx + cy)
+            if hit and (best is None or d < best[0]):
                 best = (d, k)
         return best[1] if best else None
+
+    def dock_toolbar(self, where):
+        """Gear menu > Dock toolbar to: "tl"/"tr"/"bl"/"br", "top" (top centre) or "float"
+        (a floating bar at its last spot). Works even when dragging is awkward."""
+        if where == "top":
+            return self.reset_toolbar()
+        cur = self.ui.get("toolbar_corner")
+        if (where in TOOLBAR_CORNERS and cur == where) or (where == "float" and not cur):
+            return
+        self.checkpoint("dock toolbar")
+        if where in TOOLBAR_CORNERS:
+            self.ui["toolbar_corner"] = where
+        else:
+            self.ui.pop("toolbar_corner", None)
+        self.place_bars()
+        self.search.send_to_desktop_layer()
+        log.info("Toolbar docked: %s", where)
+        self.commit()
 
     def toolbar_moved(self, corner, pos):
         """The toolbar was dragged by its grip (or in Edit layout) and dropped."""
@@ -256,6 +287,7 @@ class Controller:
             self.place_bars()
             return
         self.checkpoint("move toolbar")
+        log.info("Toolbar dropped: %s", corner or f"floating at {pos.x()},{pos.y()}")
         if corner in TOOLBAR_CORNERS:
             self.ui["toolbar_corner"] = corner
         else:

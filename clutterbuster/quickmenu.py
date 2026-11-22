@@ -84,6 +84,27 @@ class QuickMenu(GlassPanel):
         tb = _btn("\u2316  Reset toolbar position", "Put the toolbar back in the middle of the top edge")
         tb.clicked.connect(lambda: self._do(self.c.reset_toolbar))
         lay.addWidget(tb)
+        lay.addWidget(self._label("Dock toolbar to"))
+        dgrid = QGridLayout()
+        dgrid.setHorizontalSpacing(6)
+        dgrid.setVerticalSpacing(6)
+        self.dock_btns = {}
+        cur_c = self.c.ui.get("toolbar_corner")
+        for i, (key, text, tip) in enumerate((
+                ("tl", "\u2196 Top-left", "Tuck the toolbar into the top-left corner"),
+                ("tr", "\u2197 Top-right", "Tuck the toolbar into the top-right corner"),
+                ("bl", "\u2199 Bottom-left", "Tuck the toolbar into the bottom-left corner"),
+                ("br", "\u2198 Bottom-right", "Tuck the toolbar into the bottom-right corner"),
+                ("top", "\u2191 Top center", "A bar in the middle of the top edge"),
+                ("float", "\u2194 Floating", "A bar where you last left it"))):
+            b = _btn(text, tip)
+            b.setCheckable(True)
+            b.setChecked(cur_c == key or (key == "float" and not cur_c and "search_pos" in self.c.ui)
+                         or (key == "top" and not cur_c and "search_pos" not in self.c.ui))
+            b.clicked.connect(lambda _=False, k=key: self._do(lambda: self.c.dock_toolbar(k)))
+            dgrid.addWidget(b, i // 2, i % 2)
+            self.dock_btns[key] = b
+        lay.addLayout(dgrid)
 
         lay.addWidget(self._label("Groups"))
         self.hide_cb = QCheckBox("Hide all groups (their items stay hidden)")

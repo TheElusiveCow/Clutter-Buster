@@ -8,6 +8,8 @@ so switching theme just refills THEME and repaints.
 The look can also be tuned with four sliders (Edit layout / Settings):
 icon size, icons per row, glass transparency and glow strength.
 """
+import json
+import logging
 import sys
 
 from PySide6.QtGui import QColor, QConicalGradient, QLinearGradient
@@ -258,13 +260,19 @@ def group_theme(group, base_choice, ui, custom_themes=()):
     ui2 = {**DEFAULT_UI, **(ui or {})}
     if group.get("transparency") is not None:
         ui2["transparency"] = int(group["transparency"])
-    key = (name, tuple(sorted(ui2.items())), len(custom_themes),
-           tuple(sorted(str(c) for c in custom_themes if c.get("name") == name)))
+    # the cache key must be plain text: ui holds nested dicts too (e.g. the name style),
+    # which once made this crash and the group stopped painting (it looked deleted)
+    key = json.dumps([name, ui2, [c for c in custom_themes if c.get("name") == name]],
+                     sort_keys=True, default=str)
     t = _group_cache.get(key)
     if t is None:
         if len(_group_cache) > 64:
             _group_cache.clear()
-        t = _group_cache[key] = build(name, ui2, custom_themes)
+        try:
+            t = _group_cache[key] = build(name, ui2, custom_themes)
+        except Exception:
+            logging.getLogger("cb").exception("Group theme %r failed; using the main theme", name)
+            return None
     return t
 
 

@@ -180,8 +180,19 @@ class GroupWidget(DesktopLayerWindow):
         return (g or {}).get("labels") or self.c.layout.prefs.get("panel_labels", "auto")
 
     def own_theme(self):
-        return theme.group_theme(self.group, self.c.layout.prefs.get("theme", theme.AUTO), self.c.ui,
-                                 self.c.layout.custom_themes)
+        try:
+            return theme.group_theme(self.group, self.c.layout.prefs.get("theme", theme.AUTO), self.c.ui,
+                                     self.c.layout.custom_themes)
+        except Exception:
+            self._log_paint_error("own theme")
+            return None              # fall back to the main theme - never an invisible group
+
+    def _log_paint_error(self, what):
+        import logging
+        if not getattr(self, "_paint_err_logged", False):
+            self._paint_err_logged = True
+            logging.getLogger("cb").exception("Group %s: %s failed (drawn with a safe fallback)",
+                                              (self.group or {}).get("name"), what)
 
     def paintEvent(self, e):
         with theme.swapped(self.own_theme()):        # a group can have its own theme / transparency

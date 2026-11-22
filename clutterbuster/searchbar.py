@@ -15,6 +15,8 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPainterPathStroker,
                            QPen, QPolygonF, QRadialGradient)
 
+from PySide6.QtWidgets import QWidget
+
 from . import decor, hotkey
 from .glass import DesktopLayerWindow, draw_edit_outline, draw_glass, draw_neon, draw_shadow
 from .theme import THEME, qcolor, rad
@@ -25,7 +27,7 @@ PILL_H, BOX_H = 58, 46
 GRIP_W, SEARCH_W, NEW_W, GEAR_W = 22, 430, 150, 46
 WEDGE_R = 224           # radius of the corner wedge
 WEDGE_BAND = WEDGE_R - 46
-SNAP = 60               # drop this close to a corner to tuck the toolbar into it
+SNAP = 100              # drop this close to a corner (logical px) to tuck the toolbar into it
 CORNERS = ("tl", "tr", "bl", "br")
 DRAG_START = 6
 # the bits along the wedge's curve (degrees from the horizontal screen edge)
@@ -295,6 +297,27 @@ class SearchBar(DesktopLayerWindow):
         p.setPen(QPen(acc, 2.5))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rr, rr)
+        sr = self.search_rect()
+        p.setBrush(qcolor("card_fill_hot"))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(sr, rad(BOX_H / 2), rad(BOX_H / 2))
+        f = QFont(self.font())
+        f.setPointSizeF(10.5)
+        f.setWeight(QFont.DemiBold)
+        p.setFont(f)
+        p.setPen(acc)
+        p.drawText(sr, Qt.AlignCenter, "Let go to tuck it into the corner")
+
+    def show_ghost(self, corner):
+        """While dragging near a corner: a glowing quarter-circle shows where it will go."""
+        g = getattr(self, "_ghost", None)
+        if corner is None:
+            if g is not None:
+                g.hide()
+            return
+        if g is None:
+            g = self._ghost = CornerGhost()
+        g.show_at(corner, self.c.avail())
 
     def hint_text(self):
         return self.c.search_hotkey()["text"] if self.hotkey_ok is not False else "click to search"
@@ -370,6 +393,7 @@ class SearchBar(DesktopLayerWindow):
             snap = self.c.toolbar_snap_corner(self.geometry(), gp)
             if snap != self._snap:
                 self._snap = snap
+                self.show_ghost(snap)
                 self.update()
             return
         h = self.hit(e.position())
@@ -385,7 +409,10 @@ class SearchBar(DesktopLayerWindow):
             started = self._drag[2]
             self._drag = None
             if started:
-                snap, self._snap = self._snap, None
+                # decide again at the drop (don't rely only on the last mouse-move)
+                snap = self.c.toolbar_snap_corner(self.geometry(), e.globalPosition().toPoint()) or self._snap
+                self._snap = None
+                self.show_ghost(None)
                 self.setCursor(Qt.OpenHandCursor)
                 self.c.toolbar_moved(snap, self.pos())
                 return
@@ -422,6 +449,40 @@ class SearchBar(DesktopLayerWindow):
 
 
 ActionBar = SearchBar   # old name: New Group + gear now live in the same toolbar
+
+
+class CornerGhost(QWidget):
+    """A see-through accent quarter-circle in the corner the toolbar will tuck into."""
+
+    def __init__(self):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                         | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.corner = "tr"
+        self.setFixedSize(WEDGE_R + 4, WEDGE_R + 4)
+
+    def show_at(self, corner, av):
+        self.corner = corner
+        w = self.width()
+        x = av.left() if corner[1] == "l" else av.right() - w + 1
+        y = av.top() if corner[0] == "t" else av.bottom() - w + 1
+        self.move(x, y)
+        self.show()
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        S = self.width()
+        c = QPointF(0 if self.corner[1] == "l" else S, 0 if self.corner[0] == "t" else S)
+        acc = QColor(THEME["default_accent"])
+        acc.setAlpha(70)
+        p.setBrush(acc)
+        acc2 = QColor(THEME["default_accent"])
+        p.setPen(QPen(acc2, 3, Qt.DashLine))
+        p.drawEllipse(c, WEDGE_R - 2, WEDGE_R - 2)
+        p.end()
 
 
 def draw_gear(p, c, r, color):

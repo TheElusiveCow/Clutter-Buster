@@ -16,6 +16,26 @@ def rounded(rect, radius):
     return path
 
 
+def _paint_failed(w, what):
+    import logging
+    if not getattr(w, "_paint_err_logged", False):
+        w._paint_err_logged = True
+        logging.getLogger("cb").exception("%s %s failed (drawn with a safe fallback)", type(w).__name__, what)
+
+
+def paint_fallback(w, p):
+    """Plain dark glass with the group's name - used only if the normal drawing failed."""
+    r = QRectF(6, 6, max(20, w.width() - 12), max(20, w.height() - 12))
+    p.setPen(QPen(QColor(255, 255, 255, 160), 1.5))
+    p.setBrush(QColor(20, 22, 40, 200))
+    p.drawRoundedRect(r, 14, 14)
+    g = getattr(w, "group", None)
+    name = g.get("name", "") if isinstance(g, dict) else ""
+    if name:
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(r.adjusted(8, 8, -8, -8), Qt.AlignHCenter | Qt.AlignTop, name)
+
+
 def draw_shadow(p, rect, radius, strength=1.0, layers=7):
     r, g, b, a = THEME["shadow"]
     p.save()
@@ -345,7 +365,19 @@ class DesktopLayerWindow(QWidget):
             bp = QPainter(pm)
             bp.setRenderHint(QPainter.Antialiasing)
             bp.setRenderHint(QPainter.SmoothPixmapTransform)
-            self.paint_body(bp)
+            try:
+                self.paint_body(bp)
+            except Exception:
+                # a drawing bug (theme, decoration, picture...) must never make a window vanish:
+                # log it once and draw a plain fallback so the group stays visible and usable
+                _paint_failed(self, "paint")
+                try:
+                    bp.resetTransform()
+                    bp.setClipping(False)
+                    bp.setOpacity(1.0)
+                    paint_fallback(self, bp)
+                except Exception:
+                    pass
             bp.end()
             self._cache, self._cache_key, self._dirty = pm, key, False
         p = QPainter(self)
@@ -353,7 +385,10 @@ class DesktopLayerWindow(QWidget):
         p.setCompositionMode(QPainter.CompositionMode_Source)
         p.drawPixmap(0, 0, self._cache)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-        self.paint_overlay(p)
+        try:
+            self.paint_overlay(p)
+        except Exception:
+            _paint_failed(self, "overlay")
         p.end()
 
     # ---------------------------------------------------------- edit-mode moving

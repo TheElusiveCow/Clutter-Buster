@@ -1155,6 +1155,27 @@ mk2.changed()
 assert mk2.preview_theme()["decor"] == "frost" and mk2.preview_theme()["corner"] == "winter"
 mk2.preview.grab().save(os.path.join(tmp, "fun-editor-preview.png"))
 mk2.close()
+# regression (Brian, v0.6.0): a group with its own theme vanished because the theme cache key
+# choked on the name-style dict in ui -> the group never painted
+c.ui["name_style"] = {"size": 21}
+c.set_group_prop(fx, "theme", "Doghouse", "group theme")
+th_ns = theme.group_theme(c.layout.group(fx), "Neon Gamer", c.ui, c.layout.custom_themes)
+assert th_ns is not None and th_ns["name"] == "Doghouse"
+img_ns = c.widgets[fx].grab().toImage()
+assert QColor(img_ns.pixel(img_ns.width() // 2, img_ns.height() // 2)).alpha() > 200, "group is drawn"
+c.set_group_prop(fx, "theme", None, "group theme")
+# any drawing error -> logged once + a plain fallback, the group stays visible and in the layout
+fw_ = c.widgets[fx]
+real_body = type(fw_).paint_body
+type(fw_).paint_body = lambda self, p: 1 / 0
+fw_._dirty = True
+img_fb = fw_.grab().toImage()
+type(fw_).paint_body = real_body
+assert QColor(img_fb.pixel(img_fb.width() // 2, img_fb.height() // 2)).alpha() > 150, "fallback drawn"
+assert c.layout.group(fx) is not None and fw_.isVisible()
+open(paths.error_log(), "w").close()       # that error was on purpose
+fw_._paint_err_logged = False
+fw_._dirty = True
 # per-group theme override shows that theme's picture
 c.set_theme_choice("Clean White")
 assert cmod.path_for(c.layout.group(fx)) is None
@@ -1213,6 +1234,37 @@ for k in ("tl", "tr", "bl", "br"):
         assert tb.hit(cpt) == key, (k, key, tb.hit(cpt))
     tb.grab().save(os.path.join(tmp, f"toolbar-wedge-{k}.png"))
 assert c.toolbar_snap_corner(QRect(av.center().x() - 300, av.center().y(), 600, 78)) is None
+# pushed into a corner with the mouse still on the grip far away (what Brian did) -> snaps
+pw, ph = sbm.pill_size()
+far = QRect(av.right() - pw + 40, av.top() - 6, pw, ph)            # shoved past the top-right edge
+assert c.toolbar_snap_corner(far, far.topLeft() + QPoint(26, 39)) == "tr"
+far = QRect(av.right() - pw + 5, av.bottom() - ph + 30, pw, ph)
+assert c.toolbar_snap_corner(far, far.topLeft() + QPoint(26, 39)) == "br"
+assert c.toolbar_snap_corner(QRect(av.left() + 5, av.top() + 40, pw, ph), QPoint(av.left() + 31, av.top() + 79)) == "tl"
+# real drag to the top-right with the grip: drop -> wedge
+c.dock_toolbar("top")
+assert not tb.wedge
+gpt = tb.grip_rect().center().toPoint()
+QTest.mousePress(tb, Qt.LeftButton, Qt.NoModifier, gpt)
+QTest.mouseMove(tb, gpt + QPoint(20, 0))
+dx = av.right() - (tb.x() + tb.width()) + 30
+QTest.mouseMove(tb, tb.grip_rect().center().toPoint() + QPoint(dx, -40))
+assert tb._snap == "tr" and tb._ghost.isVisible(), "corner hint shown while dragging"
+QTest.mouseRelease(tb, Qt.LeftButton, Qt.NoModifier, tb.grip_rect().center().toPoint())
+assert tb.wedge and tb.corner == "tr" and not tb._ghost.isVisible(), (tb.corner, c.ui.get("toolbar_corner"))
+# gear menu > Dock toolbar to ...
+for k in ("tl", "bl", "br", "tr"):
+    qm = c.show_quick_menu()
+    qm.dock_btns[k].click()
+    assert tb.wedge and tb.corner == k and c.ui["toolbar_corner"] == k
+qm = c.show_quick_menu()
+assert qm.dock_btns["tr"].isChecked()
+qm.dock_btns["float"].click()
+assert not tb.wedge and "toolbar_corner" not in c.ui
+qm = c.show_quick_menu()
+qm.dock_btns["top"].click()
+assert not tb.wedge and tb.pos() == QPoint(*tb.default_pos(av))
+c.dock_toolbar("br")
 # clicks in the wedge still work
 opened = []
 real_q, c.open_quick_search = c.open_quick_search, (lambda *a: opened.append(1))
